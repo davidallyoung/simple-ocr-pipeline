@@ -1,5 +1,8 @@
 # Simple OCR Pipeline
 
+> [!NOTE]
+> This is a passive project for trying out emerging LLM models — it's a playground, not a production tool.
+
 On-premise OCR for PDFs and images, written in Python with a live TUI. PDFs
 are parsed with **LiteParse** (LlamaIndex's fast Rust/PDFium parser): the
 embedded text layer is extracted exactly where present, and only pages flagged
