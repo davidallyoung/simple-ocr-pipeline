@@ -1,0 +1,23 @@
+# uv / python
+.venv/
+.python-version
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+
+# caches
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# tool output
+output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
