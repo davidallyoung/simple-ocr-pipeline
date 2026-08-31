@@ -20,79 +20,58 @@ def test_conf_rich_style_thresholds() -> None:
     assert canvas.conf_rich_style(0.95) == "green"
 
 
-def test_short_box_renders_compact_border_at_position() -> None:
-    # 10pt-tall box on a letter page at 72 cols maps to 2 grid rows -> compact.
-    page = _page([_line("Sample", 190.0, 48.0, 138.0, 10.0, conf=1.0)])
+def test_conf_rgb_matches_annotate_palette() -> None:
+    assert canvas.conf_rgb(0.5) == canvas.RED
+    assert canvas.conf_rgb(0.8) == canvas.AMBER
+    assert canvas.conf_rgb(0.95) == canvas.GREEN
+
+
+def test_tint_hex_is_dark_scaled_confidence_color() -> None:
+    # 25% brightness of GREEN (46, 160, 66) -> (11, 40, 16).
+    assert canvas.tint_hex(1.0) == "#0b2810"
+    assert canvas.tint_hex(0.5) == "#380e0e"  # 25% of RED (224, 56, 56)
+    assert canvas.tint_hex(0.8) == "#3a2806"  # 25% of AMBER (232, 160, 24)
+
+
+def test_box_shades_background_with_bright_text() -> None:
+    page = _page([_line("Sample", 190.0, 48.0, 138.0, 20.0, conf=1.0)])
     text = canvas.render_page(page, cols=72)
-    rows = str(text).split("\n")
 
-    sx = 72 / 612.0
-    sy = len(rows) / 792.0
-    top = int(48.0 * sy)
-    left = int(190.0 * sx)
-    right = int(328.0 * sx)
-    assert rows[top][left] == "┌" and rows[top][right] == "┐"
-    assert rows[top + 1][left] == "│" and rows[top + 1][right] == "│"
-    assert rows[top + 1][left + 1:].startswith("Sample")
     styles = {span.style for span in text.spans}
-    assert "bold green" in styles
+    assert "bold green on #0b2810" in styles  # text cells
+    assert "on #0b2810" in styles  # background-only cells
+    assert "Sample" in text.plain
 
 
-def test_narrow_box_falls_back_to_underlined_text() -> None:
-    # A 1pt-wide box is too narrow for a border: colored underline only.
-    page = _page([_line("tiny", 36.0, 48.0, 1.0, 20.0, conf=1.0)])
+def test_shade_covers_full_rectangle_not_just_text() -> None:
+    # A wide box with short text must shade the whole rect width.
+    page = _page([_line("hi", 36.0, 48.0, 400.0, 20.0, conf=1.0)])
     text = canvas.render_page(page, cols=72)
-    styles = {span.style for span in text.spans}
-    assert "bold underline green" in styles
-    assert "t" in text.plain  # first character still drawn
+    bg_spans = [s for s in text.spans if s.style == "on #0b2810"]
+    assert sum(s.end - s.start for s in bg_spans) >= int(436.0 * (72 / 612.0)) - 2
 
 
-def test_subrow_box_still_gets_compact_border() -> None:
-    # ~16pt box floors to a single grid row; it must still render boxed.
-    page = _page([_line("I digress", 36.0, 236.99, 540.0, 16.0, conf=1.0)])
-    rows = canvas.render_page(page, cols=74).plain.split("\n")
-    text_row = next(i for i, r in enumerate(rows) if "I digress" in r)
-    assert rows[text_row - 1].lstrip().startswith("┌")
-    assert rows[text_row].lstrip().startswith("│")
-
-
-def test_body_line_heights_render_uniformly() -> None:
-    # 19pt lines land on 2 or 3 grid rows depending on position; both must
-    # render the same compact way (no alternating closed/open boxes).
-    page = _page(
-        [
-            _line("one", 36.0, 48.0, 300.0, 19.4, conf=1.0),
-            _line("two", 36.0, 68.0, 300.0, 19.4, conf=1.0),
-            _line("three", 36.0, 88.0, 300.0, 19.4, conf=1.0),
-        ]
-    )
-    rows = canvas.render_page(page, cols=72).plain.split("\n")
-    text_rows = [i for i, r in enumerate(rows) if "one" in r or "two" in r or "three" in r]
-    assert len(text_rows) == 3
-    for i in text_rows:
-        assert rows[i - 1].lstrip().startswith("┌")  # top border directly above
-        assert rows[i].lstrip().startswith("│")  # text between verticals
-        assert "└" not in rows[i + 1]  # no partial bottom border under some
-
-
-def test_tall_box_gets_closed_box_drawing_border() -> None:
-    # 43pt-tall box at 72 cols spans >= 3 grid rows -> full closed rectangle.
-    page = _page([_line("Sample", 190.0, 48.0, 138.0, 43.0, conf=1.0)])
-    plain = canvas.render_page(page, cols=72).plain
-
-    rows = plain.split("\n")
-    top = next(i for i, r in enumerate(rows) if "┌" in r)
-    bottom = next(i for i, r in enumerate(rows) if "└" in r)
-    assert bottom > top
-    assert "┐" in rows[top] and "┘" in rows[bottom]
-    text_rows = [i for i, r in enumerate(rows) if "Sample" in r]
-    assert text_rows == [top + 1]  # text sits on the first interior row
-
-
-def test_low_confidence_text_gets_red_style() -> None:
+def test_low_confidence_gets_red_tint() -> None:
     page = _page([_line("shaky", 36.0, 240.0, 200.0, 19.0, conf=0.5)])
     styles = {span.style for span in canvas.render_page(page, cols=72).spans}
-    assert "bold bright_red" in styles
+    assert "bold bright_red on #380e0e" in styles
+
+
+def test_subrow_box_still_shades_one_row() -> None:
+    # ~16pt box floors to a single grid row; it must still shade + show text.
+    page = _page([_line("I digress", 36.0, 236.99, 540.0, 16.0, conf=1.0)])
+    text = canvas.render_page(page, cols=74)
+    assert "I digress" in text.plain
+    styles = {span.style for span in text.spans}
+    assert "bold green on #0b2810" in styles
+
+
+def test_narrow_box_shades_its_column_and_clips_text() -> None:
+    page = _page([_line("tiny", 36.0, 48.0, 1.0, 20.0, conf=1.0)])
+    text = canvas.render_page(page, cols=72)
+    assert "t" in text.plain  # first character fits the 1-column shade
+    styles = {span.style for span in text.spans}
+    assert "bold green on #0b2810" in styles
 
 
 def test_long_text_clipped_to_box_width() -> None:
@@ -143,6 +122,19 @@ def test_adjacent_boxes_sharing_one_column_stay_on_the_same_row() -> None:
     rows = canvas.render_page(page, cols=80).plain.split("\n")
     text_rows = [i for i, r in enumerate(rows) if "alpha" in r or "beta" in r]
     assert len(set(text_rows)) == 1
+
+
+def test_overlapping_shades_keep_both_texts() -> None:
+    # Shaded rects may blend, but neither line's text may be lost.
+    page = _page(
+        [
+            _line("alpha", 10.0, 10.0, 200.0, 20.0, conf=1.0),
+            _line("beta", 30.0, 12.0, 100.0, 20.0, conf=0.5),
+        ]
+    )
+    plain = canvas.render_page(page, cols=80).plain
+    assert "alpha" in plain
+    assert "beta" in plain
 
 
 def test_no_line_is_lost_on_a_dense_page() -> None:
