@@ -18,11 +18,34 @@ class Line:
 
 
 @dataclass
+class Paragraph:
+    """A semantic text region (provider block or geometric line grouping).
+
+    Shares the ``text``/``box``/``confidence`` field names with :class:`Line`
+    so renderers can treat both interchangeably; ``kind`` discriminates the
+    provider block type (``paragraph``, ``heading``, ``list_item``, ...).
+    """
+
+    text: str
+    box: Quad
+    confidence: float
+    kind: str = "paragraph"
+
+
+@dataclass
 class Page:
     number: int
     lines: list[Line]
     width: float | None = None
     height: float | None = None
+    paragraphs: list[Paragraph] | None = None
+
+    @property
+    def regions(self) -> list[Line | Paragraph]:
+        """Boxes to visualize: paragraphs when present, else raw lines."""
+        if self.paragraphs:
+            return list(self.paragraphs)
+        return list(self.lines)
 
     @property
     def text(self) -> str:
@@ -61,6 +84,16 @@ def build_document(
                 for line in page.lines
             ],
         }
+        if page.paragraphs:
+            data["paragraphs"] = [
+                {
+                    "box": para.box.to_list(),
+                    "text": para.text,
+                    "confidence": para.confidence,
+                    "kind": para.kind,
+                }
+                for para in page.paragraphs
+            ]
         if page.width is not None:
             data["width"] = page.width
         if page.height is not None:

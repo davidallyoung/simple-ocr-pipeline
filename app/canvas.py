@@ -21,6 +21,10 @@ from rich.text import Text
 
 from app import output
 
+#: Anything a page's ``regions`` can contain; Line and Paragraph share the
+#: text/box/confidence fields the canvas draws.
+Region = output.Line | output.Paragraph
+
 RED = (224, 56, 56)
 AMBER = (232, 160, 24)
 GREEN = (46, 160, 66)
@@ -60,10 +64,10 @@ def tint_hex(conf: float) -> str:
 
 
 def estimate_page_size(page: output.Page) -> tuple[float, float]:
-    """Page size in points; falls back to the line-box extents when unknown."""
+    """Page size in points; falls back to the region-box extents when unknown."""
     if page.width and page.height:
         return page.width, page.height
-    rects = [line.box.xyxy for line in page.lines]
+    rects = [region.box.xyxy for region in page.regions]
     if not rects:
         return DEFAULT_PAGE_SIZE
     width = max(x1 for _, _, x1, _ in rects) + 2.0
@@ -134,21 +138,25 @@ class _Grid:
         return text
 
 
-def render_page(page: output.Page, cols: int) -> Text:
-    """Render one page's shaded line regions onto a character grid.
+def layout_page(
+    page: output.Page, cols: int
+) -> tuple[list[tuple[Region, int, int, int, int]], int, int]:
+    """Place a page's visual regions (paragraphs or lines) on a character grid.
 
-    Boxes are placed in reading order; a box that would share grid rows with
-    a column-overlapping predecessor is pushed below it, so text never
-    collides. The grid grows past its natural height when dense pages need
-    the extra room.
+    Returns ``(rects, rows, cols)`` where each rect is
+    ``(region, x0, y0, x1, y1)`` in grid coordinates. Boxes are placed in
+    reading order; a box that would share grid rows with a
+    column-overlapping predecessor is pushed below it, so text never
+    collides. ``rows`` may exceed the page's natural height when dense
+    pages need the extra room.
     """
     cols = max(MIN_COLS, min(cols, MAX_COLS))
     width, height = estimate_page_size(page)
     natural_rows = max(3, round(cols * height / width * CELL_ASPECT))
     sx, sy = cols / width, natural_rows / height
 
-    ordered = sorted(page.lines, key=lambda ln: (ln.box.xyxy[1], ln.box.xyxy[0]))
-    placed: list[tuple[output.Line, int, int, int, int]] = []
+    ordered = sorted(page.regions, key=lambda r: (r.box.xyxy[1], r.box.xyxy[0]))
+    placed: list[tuple[Region, int, int, int, int]] = []
     for line in ordered:
         x0, y0, x1, y1 = line.box.xyxy
         cx0 = max(0, int(x0 * sx))
@@ -170,17 +178,42 @@ def render_page(page: output.Page, cols: int) -> Text:
         placed.append((line, cx0, cy0, cx1, cy1))
 
     deepest = max((p[4] for p in placed), default=-1)
-    grid = _Grid(cols, max(natural_rows, deepest + 1))
-    for line, bx0, by0, bx1, by1 in placed:
-        _shade_box(grid, line, bx0, by0, bx1, by1)
+    return placed, max(natural_rows, deepest + 1), cols
+
+
+def render_page(page: output.Page, cols: int, hover: int | None = None) -> Text:
+    """Render one page's shaded line regions onto a character grid.
+
+    ``hover`` optionally indexes a placed box, which renders with its full
+    confidence background (highlight style) instead of the dark tint.
+    """
+    placed, rows, width = layout_page(page, cols)
+    grid = _Grid(width, rows)
+    for index, (region, bx0, by0, bx1, by1) in enumerate(placed):
+        _shade_box(grid, region, bx0, by0, bx1, by1, hover=(index == hover))
     return grid.to_text()
 
 
 def _shade_box(
-    grid: _Grid, line: output.Line, x0: int, y0: int, x1: int, y1: int
+    grid: _Grid, region: Region, x0: int, y0: int, x1: int, y1: int,
+    hover: bool = False,
 ) -> None:
-    """Shade one line's rectangle and write its text in the bright color."""
-    bg = tint_hex(line.confidence)
-    grid.fill(x0, y0, x1, y1, f"on {bg}")
-    fg = conf_rich_style(line.confidence)
-    grid.try_text(x0, y0, _clip_text(line.text, x1 - x0 + 1), f"bold {fg} on {bg}")
+    """Shade one region's rectangle and write its text in the bright color.
+
+    A hovered region renders with its full confidence background (highlight)
+    and black text, instead of the dark tint with bright text.
+    """
+    if hover:
+        bg = f"on {conf_rgb_hex(region.confidence)}"
+        fg = "black"
+    else:
+        bg = f"on {tint_hex(region.confidence)}"
+        fg = conf_rich_style(region.confidence)
+    grid.fill(x0, y0, x1, y1, bg)
+    grid.try_text(x0, y0, _clip_text(region.text, x1 - x0 + 1), f"bold {fg} {bg}")
+
+
+def conf_rgb_hex(conf: float) -> str:
+    """Full-brightness hex color for a confidence (hover highlight style)."""
+    r, g, b = conf_rgb(conf)
+    return f"#{r:02x}{g:02x}{b:02x}"

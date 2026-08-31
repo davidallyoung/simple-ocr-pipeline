@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from app import lite
 
 
@@ -105,3 +107,69 @@ def test_parse_pdf_carries_page_dimensions(monkeypatch, tmp_path) -> None:
     result = lite.parse_pdf(p, object(), use_ocr=False)
     assert result[0].width == 612.0
     assert result[0].height == 792.0
+
+
+def _block(
+    kind: str, x: float, y: float, w: float, h: float, text: str | None
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        kind=kind, text=text, bbox=SimpleNamespace(x=x, y=y, width=w, height=h)
+    )
+
+
+def test_parse_pdf_maps_layout_blocks_to_paragraphs(monkeypatch, tmp_path) -> None:
+    p = tmp_path / "doc.pdf"
+    p.write_bytes(b"%PDF")
+
+    page = _page(
+        1,
+        [_item("Title line", 10, 10, 100, 12, None), _item("Body", 10, 40, 200, 12, None)],
+    )
+    page.blocks = [
+        _block("heading", 10, 10, 100, 12, "Title line"),
+        _block("paragraph", 10, 40, 200, 12, "Body text"),
+        _block("table", 0, 0, 50, 50, None),  # excluded kind
+    ]
+
+    class FakeParser:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN001
+            assert kwargs.get("extract_blocks") is True
+
+        def parse(self, path: str) -> SimpleNamespace:  # noqa: ANN002
+            return SimpleNamespace(pages=[page])
+
+    monkeypatch.setattr(lite, "LiteParse", FakeParser)
+    result = lite.parse_pdf(p, object(), use_ocr=False)
+    paras = result[0].paragraphs
+    assert paras is not None
+    assert [pp.kind for pp in paras] == ["heading", "paragraph"]
+    assert paras[0].text == "Title line"
+    assert paras[0].box.xyxy == (10.0, 10.0, 110.0, 22.0)
+    # confidence derives from member lines inside the block bbox
+    assert paras[0].confidence == pytest.approx(1.0)
+
+
+def test_parse_pdf_falls_back_to_geometric_paragraphs(monkeypatch, tmp_path) -> None:
+    p = tmp_path / "doc.pdf"
+    p.write_bytes(b"%PDF")
+
+    page = _page(
+        1,
+        [_item("one", 10, 10, 100, 12, None), _item("two", 10, 23, 100, 12, None)],
+    )
+    page.blocks = []  # no blocks -> geometric grouping
+
+    class FakeParser:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN001
+            pass
+
+        def parse(self, path: str) -> SimpleNamespace:  # noqa: ANN002
+            return SimpleNamespace(pages=[page])
+
+    monkeypatch.setattr(lite, "LiteParse", FakeParser)
+    result = lite.parse_pdf(p, object(), use_ocr=False)
+    paras = result[0].paragraphs
+    assert paras is not None
+    assert len(paras) == 1
+    assert paras[0].text == "one two"
+    assert paras[0].kind == "paragraph"

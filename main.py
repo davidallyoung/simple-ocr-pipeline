@@ -13,7 +13,17 @@ from PIL import Image
 from rich.console import Console
 from rich.prompt import Prompt
 
-from app import annotate, ingest, lite, lite_server, output, pdfs, tui, viewer
+from app import (
+    annotate,
+    ingest,
+    lite,
+    lite_server,
+    output,
+    paragraphs,
+    pdfs,
+    tui,
+    viewer,
+)
 from app.engine import OcrEngine, cuda_available
 
 DEFAULT_OUTPUT = Path("output")
@@ -136,6 +146,7 @@ def run_batch(
                                 lines=lines,
                                 width=image.width * box_scale,
                                 height=image.height * box_scale,
+                                paragraphs=paragraphs.group_paragraphs(lines),
                             )
                         )
                 for page in doc_pages:

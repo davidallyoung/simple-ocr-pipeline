@@ -64,6 +64,9 @@ def test_output_document_shape(tmp_path: Path) -> None:
     page = output.Page(
         number=1,
         lines=[output.Line(text="hello", box=Quad.from_xywh(0, 0, 1, 1), confidence=0.9)],
+        paragraphs=[
+            output.Paragraph(text="hello", box=Quad.from_xywh(0, 0, 1, 1), confidence=0.9)
+        ],
     )
     doc = output.build_document(src, [page], "easyocr", ["en"], dpi=200)
     out_dir = tmp_path / "out"
@@ -74,6 +77,14 @@ def test_output_document_shape(tmp_path: Path) -> None:
     data = json.loads(out_path.read_text(encoding="utf-8"))
     assert data["pages"][0]["text"] == "hello"
     assert data["pages"][0]["lines"][0]["confidence"] == 0.9
+    assert data["pages"][0]["paragraphs"][0]["kind"] == "paragraph"
+
+
+def test_page_regions_prefer_paragraphs() -> None:
+    lines = [output.Line(text="a", box=Quad.from_xywh(0, 0, 1, 1), confidence=1.0)]
+    paras = [output.Paragraph(text="a b", box=Quad.from_xywh(0, 0, 2, 2), confidence=0.9)]
+    assert output.Page(number=1, lines=lines, paragraphs=paras).regions == paras
+    assert output.Page(number=1, lines=lines).regions == lines  # fallback
 
 
 def test_viewer_renders_document(tmp_path: Path) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 from rich.console import Console
@@ -85,33 +86,34 @@ def choose_file(
             f"{job.chars} chars · conf {job.conf:.2f})[/]"
         )
     console.print("  [dim]Hint: enter a number to preview, add [bold]j[/bold] for raw "
-                  "JSON or [bold]v[/bold] for annotated page images "
-                  "(e.g. [bold]1v[/bold]; bare v/j applies to the only file), "
+                  "JSON, [bold]v[/bold] for annotated page images, or [bold]t[/bold] for "
+                  "the interactive inspector "
+                  "(e.g. [bold]1t[/bold]; bare v/j/t applies to the only file), "
                   "or Enter to continue.[/]")
 
     while True:
         try:
             raw = Prompt.ask(
-                "[bold]Inspect?[/] (number; [dim]j[/dim] for JSON, [dim]v[/dim] for "
-                "annotated pages, [dim]Enter[/dim] to skip)"
+                "[bold]Inspect?[/] (number; [dim]j[/dim] JSON, [dim]v[/dim] images, "
+                "[dim]t[/dim] inspector, [dim]Enter[/dim] to skip)"
             )
         except EOFError:
             return
         choice = (raw or "").strip().lower()
         if not choice:
             return
-        raw_json = choice.endswith("j")
-        view_images = choice.endswith("v")
-        if raw_json or view_images:
+        action = choice[-1:]
+        flagged = action in ("j", "v", "t")
+        if flagged:
             choice = choice[:-1]
         if not choice:
-            # Bare "j"/"v": only unambiguous when a single file completed.
+            # Bare "j"/"v"/"t": only unambiguous when a single file completed.
             if len(jobs) == 1:
                 choice = "1"
             else:
                 console.print(
                     f"[yellow]{len(jobs)} files done — enter a number "
-                    "(e.g. 1v).[/]"
+                    "(e.g. 1t).[/]"
                 )
                 continue
         if not choice.isdigit():
@@ -126,10 +128,12 @@ def choose_file(
             console.print(f"[red]Output missing: {path}[/]")
             continue
         doc = json.loads(path.read_text(encoding="utf-8"))
-        if raw_json:
+        if action == "j":
             console.print(Syntax(json.dumps(doc, indent=2), "json", word_wrap=True))
-        elif view_images:
+        elif action == "v":
             _annotate_document(console, doc, path)
+        elif action == "t":
+            _run_inspector(console, doc)
         else:
             render_document(console, doc)
 
@@ -145,3 +149,16 @@ def _annotate_document(console: Console, doc: dict, json_path: Path) -> None:
         return
     console.print(f"[green]Wrote {len(paths)} annotated page(s) -> {pages_dir}[/]")
     annotate.open_folder(pages_dir)
+
+
+def _run_inspector(console: Console, doc: dict) -> None:
+    """Launch the Textual hover inspector (requires an interactive terminal)."""
+    if not sys.stdin.isatty():
+        console.print(
+            "[yellow]The interactive inspector needs a terminal (stdin is "
+            "piped); use the numbered preview or run without piping.[/]"
+        )
+        return
+    from app.inspector import OcrInspector
+
+    OcrInspector(doc).run()

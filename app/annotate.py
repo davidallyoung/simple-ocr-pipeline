@@ -49,29 +49,30 @@ def page_file_for(pages_dir: Path, page_number: int) -> Path:
 
 def annotate_page(
     image: Image.Image,
-    lines: list[output.Line],
+    regions: list[output.Line | output.Paragraph],
     scale: float = 1.0,
     label: bool = True,
 ) -> Image.Image:
-    """Draw line boxes onto a copy of ``image`` and return a fresh RGB image.
+    """Draw region boxes onto a copy of ``image`` and return a fresh RGB image.
 
     ``scale`` converts canonical point space to the image's pixel space
     (``dpi / 72`` for rendered PDF pages, 1.0 for native-size images).
+    Regions are paragraphs when the page has them, else raw lines.
     """
     base = image.convert("RGB")
     overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
-    for line in lines:
-        pts = [(x * scale, y * scale) for x, y in line.box.to_list()]
+    for region in regions:
+        pts = [(x * scale, y * scale) for x, y in region.box.to_list()]
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
         if max(xs) - min(xs) < 1 or max(ys) - min(ys) < 1:
             continue  # degenerate (e.g. zero-fallback) box
-        color = conf_color(line.confidence)
+        color = conf_color(region.confidence)
         draw.polygon(pts, fill=color + (FILL_ALPHA,))
         draw.line([*pts, pts[0]], fill=color + (255,), width=OUTLINE_WIDTH, joint="curve")
         if label:
-            _draw_label(draw, pts, line.confidence)
+            _draw_label(draw, pts, region.confidence)
     return Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
 
 
@@ -113,7 +114,7 @@ def annotate_document(
         with pymupdf.open(source) as doc:
             for page in pages:
                 rendered = _render_pdf_page(doc, page.number, dpi)
-                annotated = annotate_page(rendered, page.lines, scale=dpi / 72.0)
+                annotated = annotate_page(rendered, page.regions, scale=dpi / 72.0)
                 out = page_file_for(out_dir, page.number)
                 annotated.save(out)
                 written.append(out)
@@ -121,7 +122,7 @@ def annotate_document(
         with Image.open(source) as img:
             rendered = img.convert("RGB")
         for page in pages:
-            annotated = annotate_page(rendered, page.lines, scale=1.0)
+            annotated = annotate_page(rendered, page.regions, scale=1.0)
             out = page_file_for(out_dir, page.number)
             annotated.save(out)
             written.append(out)
@@ -140,12 +141,22 @@ def pages_from_document(doc: dict) -> list[output.Page]:
             )
             for line in raw.get("lines", [])
         ]
+        paragraphs = [
+            output.Paragraph(
+                text=str(para.get("text", "")),
+                box=_quad_from_json(para.get("box", [])),
+                confidence=float(para.get("confidence", 0.0)),
+                kind=str(para.get("kind", "paragraph")),
+            )
+            for para in raw.get("paragraphs", [])
+        ]
         pages.append(
             output.Page(
                 number=int(raw.get("page", len(pages) + 1)),
                 lines=lines,
                 width=_opt_float(raw.get("width")),
                 height=_opt_float(raw.get("height")),
+                paragraphs=paragraphs or None,
             )
         )
     return pages
