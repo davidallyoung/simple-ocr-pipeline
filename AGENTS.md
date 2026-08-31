@@ -22,6 +22,7 @@ No CI or pre-commit exists; run all three before pushing.
 
 - `main.py` is the only entrypoint; it runs an interactive prompt loop and drives one worker thread per batch (TUI renders from a separate thread — state changes go through `app/tui.py`'s lock/revision mechanism).
 - PDFs have two paths: LiteParse text-layer extraction with selective OCR for flagged pages (`app/lite.py`), or full rasterization + EasyOCR (`app/pdfs.py`, forced by `--ocr-only`).
+- All boxes share one canonical coordinate model (`app/geometry.py:Quad`, 72-DPI points, top-left origin). EasyOCR pixel boxes are scaled by `72/dpi` at the call site in `main.py`; LiteParse maps in unchanged. Annotation (`app/annotate.py`, `--annotate` or viewer `v` suffix) renders pages and scales boxes by `dpi/72`; the TUI viewer (`1` at the inspect prompt) shows each page as a character-grid canvas (`app/canvas.py`) with confidence-colored boxes.
 - `app/lite_server.py` hosts a Flask `/ocr` endpoint on `127.0.0.1` as a session singleton; `main()`'s `finally` closes it. Don't spawn it in tests.
 - `app/engine.py:OcrEngine` lazy-loads EasyOCR models on first `recognize()`. Tests must stay offline: stub the engine/LiteParse instead of loading real models (existing tests do this via fakes in `tests/`).
 - Output JSONs land in `output/` (gitignored), mirroring input structure relative to the anchor; the original extension is kept: `report.pdf` -> `report.pdf.json`.
@@ -30,3 +31,4 @@ No CI or pre-commit exists; run all three before pushing.
 
 - Windows-first repo (expect git CRLF warnings; paths are backslash-rooted).
 - Every module uses `from __future__ import annotations` with full type hints; keep that style.
+- Anytime you complete a new task, feature, or bug fix, exercise it through the application end-to-end by running the TUI yourself against the sample document in `samples/sample-local-pdf.pdf` (e.g. `'' | uv run python main.py samples\sample-local-pdf.pdf --annotate`; pipe input like `"1"` or `"v"` to drive the interactive prompts).

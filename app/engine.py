@@ -8,6 +8,8 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from app.geometry import Quad
+
 
 def cuda_available() -> bool:
     try:
@@ -48,18 +50,19 @@ class OcrEngine:
 
     def recognize(
         self, image: Image.Image, language: str | None = None
-    ) -> list[tuple[list[list[float]], str, float]]:
+    ) -> list[tuple[Quad, str, float]]:
         """Run OCR on one image.
 
-        Returns a list of ``(box, text, confidence)`` tuples as produced by
-        EasyOCR's ``readtext`` with ``detail=1``. ``language`` is accepted for
-        the LiteParse OCR endpoint and ignored (the Reader is constructed with
-        all configured languages).
+        Returns a list of ``(quad, text, confidence)`` tuples. Quads are in
+        the rasterized image's pixel space (top-left origin); callers convert
+        to canonical point space with ``Quad.scaled(72 / dpi)`` where the DPI
+        context is known. ``language`` is accepted for the LiteParse OCR
+        endpoint and ignored (the Reader is constructed with all configured
+        languages).
         """
         reader = self._ensure_reader()
         raw = reader.readtext(np.asarray(image), detail=1, paragraph=False)
-        results: list[tuple[list[list[float]], str, float]] = []
+        results: list[tuple[Quad, str, float]] = []
         for box, text, conf in raw:
-            box = [[float(x), float(y)] for x, y in box]
-            results.append((box, str(text), float(conf)))
+            results.append((Quad.from_quad(box), str(text), float(conf)))
         return results

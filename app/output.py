@@ -7,11 +7,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 
+from app.geometry import Quad
+
 
 @dataclass
 class Line:
     text: str
-    box: list[list[float]]
+    box: Quad
     confidence: float
 
 
@@ -19,6 +21,8 @@ class Line:
 class Page:
     number: int
     lines: list[Line]
+    width: float | None = None
+    height: float | None = None
 
     @property
     def text(self) -> str:
@@ -40,7 +44,29 @@ def build_document(
     pages: list[Page],
     engine_name: str,
     languages: list[str],
+    dpi: int | None = None,
 ) -> dict:
+    def page_dict(page: Page) -> dict:
+        data = {
+            "page": page.number,
+            "text": page.text,
+            "text_char_count": page.text_char_count,
+            "mean_confidence": page.mean_confidence,
+            "lines": [
+                {
+                    "box": line.box.to_list(),
+                    "text": line.text,
+                    "confidence": line.confidence,
+                }
+                for line in page.lines
+            ],
+        }
+        if page.width is not None:
+            data["width"] = page.width
+        if page.height is not None:
+            data["height"] = page.height
+        return data
+
     return {
         "source": str(source.resolve()),
         "engine": engine_name,
@@ -48,19 +74,8 @@ def build_document(
         "processed_at": datetime.now(UTC).isoformat(),
         "text": "\n\n".join(page.text for page in pages),
         "page_count": len(pages),
-        "pages": [
-            {
-                "page": page.number,
-                "text": page.text,
-                "text_char_count": page.text_char_count,
-                "mean_confidence": page.mean_confidence,
-                "lines": [
-                    {"box": line.box, "text": line.text, "confidence": line.confidence}
-                    for line in page.lines
-                ],
-            }
-            for page in pages
-        ],
+        "dpi": dpi,
+        "pages": [page_dict(page) for page in pages],
     }
 
 

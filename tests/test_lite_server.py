@@ -5,6 +5,7 @@ import io
 from PIL import Image
 
 from app import lite_server
+from app.geometry import Quad
 
 
 class StubEngine:
@@ -13,10 +14,14 @@ class StubEngine:
 
     def recognize(
         self, image: Image.Image, language: str | None = None
-    ) -> list[tuple[list[list[float]], str, float]]:
+    ) -> list[tuple[Quad, str, float]]:
         self.calls.append((image, language))
         return [
-            ([[10.0, 20.0], [110.0, 20.0], [110.0, 40.0], [10.0, 40.0]], "hello", 0.95)
+            (
+                Quad.from_quad([[10.0, 20.0], [110.0, 20.0], [110.0, 40.0], [10.0, 40.0]]),
+                "hello",
+                0.95,
+            )
         ]
 
 

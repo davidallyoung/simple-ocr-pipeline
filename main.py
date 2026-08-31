@@ -13,7 +13,7 @@ from PIL import Image
 from rich.console import Console
 from rich.prompt import Prompt
 
-from app import ingest, lite, lite_server, output, pdfs, tui, viewer
+from app import annotate, ingest, lite, lite_server, output, pdfs, tui, viewer
 from app.engine import OcrEngine, cuda_available
 
 DEFAULT_OUTPUT = Path("output")
@@ -52,6 +52,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="PDFs: rasterize every page and OCR with EasyOCR directly "
         "(bypass LiteParse; no text-layer extraction)",
+    )
+    parser.add_argument(
+        "--annotate",
+        action="store_true",
+        help="Write per-page PNGs with OCR boxes overlaid, colored by "
+        "confidence (output/<file>.pages/page-NNN.png)",
     )
     return parser.parse_args(argv)
 
@@ -101,31 +107,56 @@ def run_batch(
             try:
                 t.start_file(index, pages_total=count_pages(file, args.dpi))
                 doc_pages: list[output.Page] = []
+                used_liteparse = False
                 if file.suffix.lower() == ".pdf" and not args.ocr_only:
                     if lite.liteparse_available():
                         doc_pages = pdf_via_liteparse(file, engine, args)
+                        used_liteparse = bool(doc_pages)
                     else:
                         console.print(
                             f"[yellow]LiteParse not available for {file.name}; "
                             "rasterizing with EasyOCR.[/]"
                         )
                 if not doc_pages:
+                    pt_scale = 72.0 / args.dpi
                     for page_num, image in enumerate(
                         iter_pages(file, args.dpi), start=1
                     ):
                         raw = engine.recognize(image)
+                        box_scale = pt_scale if file.suffix.lower() == ".pdf" else 1.0
                         lines = [
-                            output.Line(text=text, box=box, confidence=conf)
-                            for box, text, conf in raw
+                            output.Line(
+                                text=text, box=quad.scaled(box_scale), confidence=conf
+                            )
+                            for quad, text, conf in raw
                         ]
-                        doc_pages.append(output.Page(number=page_num, lines=lines))
+                        doc_pages.append(
+                            output.Page(
+                                number=page_num,
+                                lines=lines,
+                                width=image.width * box_scale,
+                                height=image.height * box_scale,
+                            )
+                        )
                 for page in doc_pages:
                     t.page_done(index, page.text_char_count, page.mean_confidence)
+                engine_name = "liteparse" if used_liteparse else "easyocr"
                 doc = output.build_document(
-                    file, doc_pages, engine_name="easyocr", languages=engine.languages
+                    file,
+                    doc_pages,
+                    engine_name=engine_name,
+                    languages=engine.languages,
+                    dpi=args.dpi,
                 )
-                output.write_document(doc, output.output_path_for(file, anchor, output_dir))
+                out_path = output.output_path_for(file, anchor, output_dir)
+                output.write_document(doc, out_path)
                 t.finish_file(index)
+                if args.annotate and doc_pages:
+                    try:
+                        pages_dir = annotate.pages_dir_for(out_path)
+                        annotate.annotate_document(file, doc_pages, dpi=args.dpi, out_dir=pages_dir)
+                    except Exception as exc:  # annotation is best-effort
+                        console.print(f"[yellow]Annotation failed for {file.name}: {exc!r}[/]")
             except Exception as exc:  # per-file isolation; keep batch going
                 t.fail_file(index, repr(exc))
 

@@ -15,7 +15,7 @@ from werkzeug.serving import make_server
 def build_app(engine: Any) -> Any:
     """Build a Flask app exposing ``POST /ocr`` around an EasyOCR engine.
 
-    ``engine`` only needs a ``recognize(image) -> list[(box, text, conf)]``
+    ``engine`` only needs a ``recognize(image) -> list[(quad, text, conf)]``
     method (see app.engine.OcrEngine), so tests can inject a stub.
     """
     from flask import Flask, jsonify, request
@@ -37,13 +37,12 @@ def build_app(engine: Any) -> Any:
             return jsonify({"error": str(exc)}), 500
 
         results = []
-        for box, text, confidence in raw:
-            xs = [pt[0] for pt in box]
-            ys = [pt[1] for pt in box]
+        for quad, text, confidence in raw:
+            x0, y0, x1, y1 = quad.xyxy
             results.append(
                 {
                     "text": text,
-                    "bbox": [min(xs), min(ys), max(xs), max(ys)],
+                    "bbox": [x0, y0, x1, y1],
                     "confidence": confidence,
                 }
             )

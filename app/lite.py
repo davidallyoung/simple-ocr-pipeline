@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from app import output
+from app.geometry import Quad
 
 try:
     from liteparse import LiteParse  # type: ignore
@@ -64,20 +65,39 @@ def parse_pdf(
             text = str(getattr(item, "text", ""))
             if not text:
                 continue
-            box = _to_polygon(item)
+            box = _to_quad(item)
             conf = float(item.confidence or 1.0)
             lines.append(output.Line(text=text, box=box, confidence=conf))
-        pages.append(output.Page(number=int(getattr(page, "page_num", 1)), lines=lines))
+        pages.append(
+            output.Page(
+                number=int(getattr(page, "page_num", 1)),
+                lines=lines,
+                width=_opt_float(getattr(page, "width", None)),
+                height=_opt_float(getattr(page, "height", None)),
+            )
+        )
     return pages
 
 
-def _to_polygon(item: object) -> list[list[float]]:
-    """Convert a TextItem's (x, y, width, height) into a 4-point box polygon."""
+def _to_quad(item: object) -> Quad:
+    """Convert a TextItem's (x, y, width, height) rect into a Quad.
+
+    LiteParse coordinates are already in the canonical 72-DPI point space,
+    so no scaling is needed. Malformed items fall back to a zero quad.
+    """
     try:
-        x = float(getattr(item, "x", 0.0))
-        y = float(getattr(item, "y", 0.0))
-        w = float(getattr(item, "width", 0.0))
-        h = float(getattr(item, "height", 0.0))
-        return [[x, y], [x + w, y], [x + w, y + h], [x, y + h]]
+        return Quad.from_xywh(
+            float(getattr(item, "x", 0.0)),
+            float(getattr(item, "y", 0.0)),
+            float(getattr(item, "width", 0.0)),
+            float(getattr(item, "height", 0.0)),
+        )
     except (TypeError, ValueError):
-        return [[0.0, 0.0], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]]
+        return Quad.zero()
+
+
+def _opt_float(value: object) -> float | None:
+    try:
+        return float(value) if value is not None else None  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None

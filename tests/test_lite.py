@@ -13,16 +13,17 @@ def _page(page_num: int, items: list[SimpleNamespace]) -> SimpleNamespace:
     return SimpleNamespace(page_num=page_num, text_items=items)
 
 
-def test_polygon_from_rect() -> None:
+def test_quad_from_rect() -> None:
     item = _item("hi", 10.0, 20.0, 30.0, 40.0, None)
-    assert lite._to_polygon(item) == [[10.0, 20.0], [40.0, 20.0], [40.0, 60.0], [10.0, 60.0]]
+    quad = lite._to_quad(item)
+    assert quad.to_list() == [[10.0, 20.0], [40.0, 20.0], [40.0, 60.0], [10.0, 60.0]]
 
 
-def test_polygon_graceful_fallback() -> None:
+def test_quad_graceful_fallback() -> None:
     item = SimpleNamespace(text="x", x=None, y=None, width=None, height=None)
-    assert lite._to_polygon(item) == [["0.0", "0.0"] for _ in range(4)] or True
-    # fallback returns empty lists; just ensure no exception and 4 points
-    assert len(lite._to_polygon(item)) == 4
+    quad = lite._to_quad(item)
+    # fallback returns a zero quad; just ensure no exception and 4 points
+    assert quad.to_list() == [[0.0, 0.0] for _ in range(4)]
 
 
 def test_needs_ocr_uses_is_complex(tmp_path, monkeypatch) -> None:  # noqa: ANN001
@@ -74,5 +75,33 @@ def test_parse_pdf_mapping_without_ocr(monkeypatch, tmp_path) -> None:  # noqa: 
     # text-layer line confidence defaults to 1.0
     assert result[0].lines[0].confidence == 1.0
     assert result[0].lines[1].confidence == 0.9
-    # box is a full polygon
-    assert result[0].lines[0].box == [[10.0, 20.0], [60.0, 20.0], [60.0, 32.0], [10.0, 32.0]]
+    # box is a full quad in canonical point space
+    assert result[0].lines[0].box.to_list() == [
+        [10.0, 20.0],
+        [60.0, 20.0],
+        [60.0, 32.0],
+        [10.0, 32.0],
+    ]
+    # LiteParse page dimensions carry through
+    assert result[0].width is None and result[0].height is None
+
+
+def test_parse_pdf_carries_page_dimensions(monkeypatch, tmp_path) -> None:
+    p = tmp_path / "doc.pdf"
+    p.write_bytes(b"%PDF")
+
+    page = _page(1, [_item("Hello", 10, 20, 50, 12, None)])
+    page.width = 612.0
+    page.height = 792.0
+
+    class FakeParser:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN001
+            pass
+
+        def parse(self, path: str) -> SimpleNamespace:  # noqa: ANN002
+            return SimpleNamespace(pages=[page])
+
+    monkeypatch.setattr(lite, "LiteParse", FakeParser)
+    result = lite.parse_pdf(p, object(), use_ocr=False)
+    assert result[0].width == 612.0
+    assert result[0].height == 792.0

@@ -7,6 +7,7 @@ from PIL import Image
 from rich.console import Console
 
 from app import ingest, output, pdfs, viewer
+from app.geometry import Quad
 
 
 def test_ingest_filters_supported_files(tmp_path: Path) -> None:
@@ -62,9 +63,9 @@ def test_output_document_shape(tmp_path: Path) -> None:
 
     page = output.Page(
         number=1,
-        lines=[output.Line(text="hello", box=[[0, 0], [1, 0], [1, 1], [0, 1]], confidence=0.9)],
+        lines=[output.Line(text="hello", box=Quad.from_xywh(0, 0, 1, 1), confidence=0.9)],
     )
-    doc = output.build_document(src, [page], "easyocr", ["en"])
+    doc = output.build_document(src, [page], "easyocr", ["en"], dpi=200)
     out_dir = tmp_path / "out"
     out_path = output.output_path_for(src, src.parent, out_dir)
     output.write_document(doc, out_path)
@@ -80,7 +81,7 @@ def test_viewer_renders_document(tmp_path: Path) -> None:
     pages = [
         output.Page(
             number=1,
-            lines=[output.Line("hello world", [[0, 0], [1, 0], [1, 1], [0, 1]], 0.99)],
+            lines=[output.Line("hello world", Quad.from_xywh(0, 0, 1, 1), 0.99)],
         ),
         output.Page(number=2, lines=[]),
     ]
@@ -102,3 +103,40 @@ def test_choose_file_skips_when_no_done(tmp_path: Path) -> None:
     console = Console(record=True)
     viewer.choose_file(console, [(job, tmp_path / "x.png.json")])
     assert "Inspect" not in console.export_text()
+
+
+def test_choose_file_bare_v_targets_single_file(tmp_path: Path, monkeypatch) -> None:
+    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
+    json_path = tmp_path / "x.pdf.json"
+    json_path.write_text("{}", encoding="utf-8")
+
+    prompted: list[str] = []
+
+    def fake_ask(*_args, **_kwargs) -> str:
+        return "v" if not prompted else ""
+
+    monkeypatch.setattr(viewer.Prompt, "ask", fake_ask)
+    monkeypatch.setattr(
+        viewer, "_annotate_document", lambda c, d, p: prompted.append(p)
+    )
+    console = Console(record=True)
+    viewer.choose_file(console, [(job, json_path)])
+    assert prompted == [json_path]
+
+
+def test_choose_file_bare_v_ambiguous_with_multiple_files(
+    tmp_path: Path, monkeypatch
+) -> None:
+    jobs = [
+        (viewer.tui.FileJob(name="a.pdf", status="done"), tmp_path / "a.pdf.json"),
+        (viewer.tui.FileJob(name="b.pdf", status="done"), tmp_path / "b.pdf.json"),
+    ]
+    answers = iter(["v", ""])
+    monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
+    annotated: list[Path] = []
+    monkeypatch.setattr(
+        viewer, "_annotate_document", lambda c, d, p: annotated.append(p)
+    )
+    console = Console(record=True)
+    viewer.choose_file(console, jobs)
+    assert annotated == []  # ambiguous: must ask for a number instead

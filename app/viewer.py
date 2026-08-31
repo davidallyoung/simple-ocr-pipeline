@@ -12,7 +12,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from app import tui
+from app import annotate, canvas, tui
 
 
 def _conf_style(conf: float) -> str:
@@ -23,13 +23,8 @@ def _conf_style(conf: float) -> str:
     return "green"
 
 
-def _format_box(box: list[list[float]]) -> str:
-    coords = ", ".join(f"({x:.2f},{y:.2f})" for x, y in box)
-    return coords or "—"
-
-
 def render_document(console: Console, doc: dict) -> None:
-    """Render one OCR JSON as a readable document (text preview + line details)."""
+    """Render one OCR JSON as a readable document (header + page canvases)."""
     source = doc.get("source", "unknown")
     language = doc.get("language", [])
     pages = doc.get("pages", [])
@@ -51,26 +46,20 @@ def render_document(console: Console, doc: dict) -> None:
         Panel(header, title=f"[bold]{Path(source).name}[/]", border_style="blue")
     )
 
-    for page in pages:
-        table = Table(title=f"Page {page.get('page', '?')}", expand=True)
-        table.add_column("#", justify="right", style="dim", width=3)
-        table.add_column("Text", max_width=80, overflow="fold")
-        table.add_column("Conf", justify="right", width=6)
-        table.add_column("Box", max_width=42, overflow="fold")
-
-        lines = page.get("lines", [])
-        if not lines:
-            table.add_row("—", Text("(no text detected)", style="dim"), "—", "—")
-        for i, line in enumerate(lines, start=1):
-            text = str(line.get("text", ""))[:120]
-            conf = float(line.get("confidence", 0.0))
-            table.add_row(
-                str(i),
-                Text(text or "—"),
-                Text(f"{conf:.2f}", style=_conf_style(conf)),
-                _format_box(line.get("box", [])),
+    for page in annotate.pages_from_document(doc):
+        if page.lines:
+            body: Text | Text = canvas.render_page(page, cols=console.width - 6)
+        else:
+            body = Text("(no text detected)", style="dim italic")
+        console.print(
+            Panel(
+                body,
+                title=f"[bold]Page {page.number}[/]",
+                subtitle=f"mean conf {page.mean_confidence:.2f}",
+                subtitle_align="right",
+                border_style="blue",
             )
-        console.print(table)
+        )
 
     json_path = doc.get("source", "")
     console.print(f"JSON: [cyan]{json_path}[/]")
@@ -95,13 +84,16 @@ def choose_file(
             f"[dim]({job.pages_done}/{job.pages_total} pg · "
             f"{job.chars} chars · conf {job.conf:.2f})[/]"
         )
-    console.print("  [dim]Hint: enter a number to preview, "
-                  "add [bold]j[/bold] for raw JSON, or Enter to continue.[/]")
+    console.print("  [dim]Hint: enter a number to preview, add [bold]j[/bold] for raw "
+                  "JSON or [bold]v[/bold] for annotated page images "
+                  "(e.g. [bold]1v[/bold]; bare v/j applies to the only file), "
+                  "or Enter to continue.[/]")
 
     while True:
         try:
             raw = Prompt.ask(
-                "[bold]Inspect?[/] (number[dim]j[/dim] for JSON, [dim]Enter[/dim] to skip)"
+                "[bold]Inspect?[/] (number; [dim]j[/dim] for JSON, [dim]v[/dim] for "
+                "annotated pages, [dim]Enter[/dim] to skip)"
             )
         except EOFError:
             return
@@ -109,8 +101,19 @@ def choose_file(
         if not choice:
             return
         raw_json = choice.endswith("j")
-        if raw_json:
+        view_images = choice.endswith("v")
+        if raw_json or view_images:
             choice = choice[:-1]
+        if not choice:
+            # Bare "j"/"v": only unambiguous when a single file completed.
+            if len(jobs) == 1:
+                choice = "1"
+            else:
+                console.print(
+                    f"[yellow]{len(jobs)} files done — enter a number "
+                    "(e.g. 1v).[/]"
+                )
+                continue
         if not choice.isdigit():
             continue
         idx = int(choice) - 1
@@ -125,5 +128,20 @@ def choose_file(
         doc = json.loads(path.read_text(encoding="utf-8"))
         if raw_json:
             console.print(Syntax(json.dumps(doc, indent=2), "json", word_wrap=True))
+        elif view_images:
+            _annotate_document(console, doc, path)
         else:
             render_document(console, doc)
+
+
+def _annotate_document(console: Console, doc: dict, json_path: Path) -> None:
+    """Generate annotated page PNGs for a completed JSON and open the folder."""
+    console.print("[dim]Rendering annotated pages...[/]")
+    try:
+        pages_dir = annotate.pages_dir_for(json_path)
+        paths = annotate.annotate_json(doc, pages_dir)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[red]{exc}[/]")
+        return
+    console.print(f"[green]Wrote {len(paths)} annotated page(s) -> {pages_dir}[/]")
+    annotate.open_folder(pages_dir)
