@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from statistics import median
 
 from app import output, paragraphs
 from app.geometry import Quad
@@ -41,8 +42,9 @@ def parse_pdf(
     When ``use_ocr`` is True, LiteParse sends scanned pages to the embedded
     EasyOCR HTTP server (spawned via ``lite_server``). Otherwise it extracts
     the PDF text layer directly with OCR disabled. Layout blocks
-    (``extract_blocks=True``) provide naturally occurring paragraph regions;
-    pages without usable blocks fall back to geometric line grouping.
+    (``extract_blocks=True``) provide naturally occurring paragraph regions,
+    split at paragraph-sized vertical gaps; pages without usable blocks fall
+    back to geometric line grouping.
     """
     if LiteParse is None:
         raise RuntimeError("liteparse is not installed")
@@ -104,16 +106,87 @@ def _paragraphs_for_page(
         box = _block_bbox_quad(block)
         if box is None:
             continue
-        text = str(getattr(block, "text", "") or "")
-        mapped.append(
+        mapped.extend(_paragraphs_from_block(block, box, lines))
+    return mapped if mapped else paragraphs.group_paragraphs(lines)
+
+
+def _paragraphs_from_block(
+    block: object, box: Quad, lines: list[output.Line]
+) -> list[output.Paragraph]:
+    """Paragraph(s) for one provider block, split at paragraph-sized gaps.
+
+    Providers sometimes emit a single block spanning several true paragraphs
+    (separated by roughly a blank line of vertical space). Member lines whose
+    vertical gap to the previous line exceeds the paragraph-break threshold
+    (``paragraphs.MAX_GAP_FACTOR`` of the typical line height) start a new
+    segment. Segments keep the block's x-span — so they tile the original
+    box — and carry per-segment text and confidence from their member lines.
+    A block without member lines, or whose lines flow without a paragraph
+    gap, stays a single paragraph using the provider's own text.
+    """
+    kind = str(getattr(block, "kind", "") or "") or "paragraph"
+    members = _lines_in_block(block, lines)
+    if len(members) < 2:
+        return [
             output.Paragraph(
-                text=text,
+                text=str(getattr(block, "text", "") or ""),
                 box=box,
                 confidence=_block_confidence(block, lines),
-                kind=kind or "paragraph",
+                kind=kind,
             )
+        ]
+    heights = [m.box.xyxy[3] - m.box.xyxy[1] for m in members]
+    positive = [h for h in heights if h > 0]
+    typical = median(positive) if positive else 1.0
+    threshold = max(typical * paragraphs.MAX_GAP_FACTOR, 0.0)
+
+    segments: list[list[output.Line]] = [[members[0]]]
+    for line in members[1:]:
+        prev_y1 = segments[-1][-1].box.xyxy[3]
+        if line.box.xyxy[1] - prev_y1 > threshold:
+            segments.append([line])
+        else:
+            segments[-1].append(line)
+    if len(segments) == 1:
+        return [
+            output.Paragraph(
+                text=str(getattr(block, "text", "") or ""),
+                box=box,
+                confidence=_block_confidence(block, lines),
+                kind=kind,
+            )
+        ]
+    x0, _, x1, _ = box.xyxy
+    return [
+        output.Paragraph(
+            text=" ".join(" ".join(ln.text.split()) for ln in segment).strip(),
+            box=Quad.from_xywh(
+                x0,
+                segment[0].box.xyxy[1],
+                x1 - x0,
+                segment[-1].box.xyxy[3] - segment[0].box.xyxy[1],
+            ),
+            confidence=sum(ln.confidence for ln in segment) / len(segment),
+            kind=kind,
         )
-    return mapped if mapped else paragraphs.group_paragraphs(lines)
+        for segment in segments
+    ]
+
+
+def _lines_in_block(block: object, lines: list[output.Line]) -> list[output.Line]:
+    """Lines whose centers fall inside the block bbox, in reading order."""
+    rect = getattr(block, "bbox", None)
+    if rect is None or not lines:
+        return []
+    x0, y0 = float(rect.x), float(rect.y)
+    x1, y1 = x0 + float(rect.width), y0 + float(rect.height)
+    members = [
+        ln
+        for ln in lines
+        if x0 <= (ln.box.xyxy[0] + ln.box.xyxy[2]) / 2 <= x1
+        and y0 <= (ln.box.xyxy[1] + ln.box.xyxy[3]) / 2 <= y1
+    ]
+    return sorted(members, key=lambda ln: (ln.box.xyxy[1], ln.box.xyxy[0]))
 
 
 def _block_bbox_quad(block: object) -> Quad | None:
@@ -134,21 +207,7 @@ def _block_bbox_quad(block: object) -> Quad | None:
 
 def _block_confidence(block: object, lines: list[output.Line]) -> float:
     """Mean confidence of the lines whose centers fall inside the block."""
-    rect = getattr(block, "bbox", None)
-    if rect is None or not lines:
-        return 1.0
-    x0, y0, x1, y1 = (
-        float(rect.x),
-        float(rect.y),
-        float(rect.x + rect.width),
-        float(rect.y + rect.height),
-    )
-    members = [
-        ln
-        for ln in lines
-        if x0 <= (ln.box.xyxy[0] + ln.box.xyxy[2]) / 2 <= x1
-        and y0 <= (ln.box.xyxy[1] + ln.box.xyxy[3]) / 2 <= y1
-    ]
+    members = _lines_in_block(block, lines)
     if not members:
         return 1.0
     return sum(ln.confidence for ln in members) / len(members)

@@ -149,6 +149,68 @@ def test_parse_pdf_maps_layout_blocks_to_paragraphs(monkeypatch, tmp_path) -> No
     assert paras[0].confidence == pytest.approx(1.0)
 
 
+def test_parse_pdf_splits_oversized_block_at_paragraph_gaps(
+    monkeypatch, tmp_path
+) -> None:  # noqa: ANN001
+    p = tmp_path / "doc.pdf"
+    p.write_bytes(b"%PDF")
+
+    # Two flowing rows, then a blank-line-sized gap before the third row:
+    # the provider block spans two true paragraphs and must be split.
+    items = [
+        _item("first row", 10, 10, 100, 12, None),
+        _item("second row", 10, 22.2, 100, 12, None),
+        _item("next para", 10, 46.0, 100, 12, None),
+    ]
+    page = _page(1, items)
+    page.blocks = [_block("paragraph", 10, 10, 200, 48, "first row second row next para")]
+
+    class FakeParser:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN001
+            pass
+
+        def parse(self, path: str) -> SimpleNamespace:  # noqa: ANN002
+            return SimpleNamespace(pages=[page])
+
+    monkeypatch.setattr(lite, "LiteParse", FakeParser)
+    result = lite.parse_pdf(p, object(), use_ocr=False)
+    paras = result[0].paragraphs
+    assert paras is not None
+    assert [pp.text for pp in paras] == ["first row second row", "next para"]
+    assert paras[0].box.xyxy == (10.0, 10.0, 210.0, 34.2)  # block x-span kept
+    assert paras[1].box.xyxy == (10.0, 46.0, 210.0, 58.0)
+    assert [pp.kind for pp in paras] == ["paragraph", "paragraph"]
+    assert all(pp.confidence == pytest.approx(1.0) for pp in paras)
+
+
+def test_block_with_flowing_lines_stays_whole(monkeypatch, tmp_path) -> None:
+    p = tmp_path / "doc.pdf"
+    p.write_bytes(b"%PDF")
+
+    # Rows without a paragraph-sized gap keep the provider's own text.
+    items = [
+        _item("row one", 10, 10, 100, 12, None),
+        _item("row two", 10, 22.2, 100, 12, None),
+    ]
+    page = _page(1, items)
+    page.blocks = [_block("paragraph", 10, 10, 200, 24.2, "provider text verbatim")]
+
+    class FakeParser:
+        def __init__(self, **kwargs) -> None:  # noqa: ANN001
+            pass
+
+        def parse(self, path: str) -> SimpleNamespace:  # noqa: ANN002
+            return SimpleNamespace(pages=[page])
+
+    monkeypatch.setattr(lite, "LiteParse", FakeParser)
+    result = lite.parse_pdf(p, object(), use_ocr=False)
+    paras = result[0].paragraphs
+    assert paras is not None
+    assert len(paras) == 1
+    assert paras[0].text == "provider text verbatim"
+    assert paras[0].box.xyxy == (10.0, 10.0, 210.0, 34.2)
+
+
 def test_parse_pdf_falls_back_to_geometric_paragraphs(monkeypatch, tmp_path) -> None:
     p = tmp_path / "doc.pdf"
     p.write_bytes(b"%PDF")

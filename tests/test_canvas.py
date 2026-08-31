@@ -74,13 +74,46 @@ def test_narrow_box_shades_its_column_and_clips_text() -> None:
     assert "bold green on #0b2810" in styles
 
 
-def test_long_text_clipped_to_box_width() -> None:
+def test_long_text_wraps_within_box_width_and_clips_at_the_end() -> None:
     page = _page([_line("x" * 300, 36.0, 100.0, 100.0, 10.0, conf=1.0)])
-    plain = canvas.render_page(page, cols=72).plain
-    text_row = next(r for r in plain.split("\n") if "x" in r)
+    rows = canvas.render_page(page, cols=72).plain.split("\n")
+    text_rows = [r for r in rows if "x" in r]
+    assert len(text_rows) >= 2  # the run wraps onto several shaded rows
     x1_col = int((36.0 + 100.0) * (72 / 612.0))
-    assert len(text_row.rstrip()) <= x1_col + 1
-    assert "…" in text_row
+    for row in text_rows:
+        assert len(row.rstrip()) <= x1_col + 1
+    assert "…" not in text_rows[0]
+    assert "…" in text_rows[-1]
+
+
+def test_wrap_text_splits_long_words_and_marks_overflow() -> None:
+    assert canvas._wrap_text("hello world", 10, 3) == ["hello", "world"]
+    assert canvas._wrap_text("x" * 25, 10, 2) == ["x" * 10, "x" * 9 + "…"]
+    assert canvas._wrap_text("", 10, 3) == ["—"]
+    assert canvas._wrap_text("a b c", 10, 1) == ["a b c"]  # fits: no ellipsis
+    assert canvas._wrap_text("alpha beta", 5, 1) == ["alph…"]
+
+
+def test_paragraph_text_wraps_across_box_rows_without_ellipsis() -> None:
+    text = " ".join(f"word{i}" for i in range(60))
+    page = _page([_line(text, 36.0, 100.0, 540.0, 200.0, conf=1.0)])
+    rows = canvas.render_page(page, cols=72).plain.split("\n")
+    text_rows = [r for r in rows if "word" in r]
+    assert len(text_rows) >= 2  # text flows down the box, not one clipped row
+    assert all("…" not in row for row in text_rows)
+    assert "word0" in text_rows[0]
+    assert "word59" in text_rows[-1]
+
+
+def test_unfittable_text_keeps_ellipsis_on_last_visible_row() -> None:
+    # A degenerate one-row box: wrap collapses back to a single clipped row.
+    page = _page(
+        [_line("alpha beta gamma delta", 36.0, 100.0, 100.0, 1.0, conf=1.0)]
+    )
+    rows = canvas.render_page(page, cols=72).plain.split("\n")
+    text_rows = [r for r in rows if "alpha" in r]
+    assert len(text_rows) == 1
+    assert text_rows[0].rstrip().endswith("…")
 
 
 def test_estimated_page_size_from_line_extents() -> None:

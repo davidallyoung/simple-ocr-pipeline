@@ -5,8 +5,9 @@ cells — ``cols`` wide, with rows derived from the page aspect ratio and a
 character-cell correction (terminal glyphs are roughly twice as tall as
 wide). Each line's quad shades its grid rectangle like a highlighter pen:
 the background is a dark tint of the confidence color and the line text
-renders bright in the same color family, so red/amber/green reads at a
-glance.
+renders bright in the same color family, so red/amber/green reads at a glance.
+Region text word-wraps across the rectangle's rows; a trailing ellipsis marks
+anything that still does not fit.
 
 Boxes are placed in reading order; a box that would share grid rows with a
 column-overlapping predecessor is pushed below it, so text never collides.
@@ -16,6 +17,8 @@ drop into a Panel.
 """
 
 from __future__ import annotations
+
+import textwrap
 
 from rich.text import Text
 
@@ -82,6 +85,20 @@ def _clip_text(text: str, width: int) -> str:
     if width <= 1:
         return text[:width]
     return text[: width - 1] + "…"
+
+
+def _wrap_text(text: str, width: int, max_rows: int) -> list[str]:
+    """Word-wrap text to ``width`` columns over at most ``max_rows`` rows.
+
+    Long words split rather than overflow; the last visible row carries an
+    ellipsis when the wrapped lines do not all fit.
+    """
+    normalized = " ".join(str(text).split()) or "—"
+    lines = textwrap.wrap(normalized, width=width, break_long_words=True)
+    if len(lines) > max_rows:
+        lines = lines[:max_rows]
+        lines[-1] = _clip_text(lines[-1] + "…", width)
+    return lines
 
 
 class _Grid:
@@ -200,8 +217,9 @@ def _shade_box(
 ) -> None:
     """Shade one region's rectangle and write its text in the bright color.
 
-    A hovered region renders with its full confidence background (highlight)
-    and black text, instead of the dark tint with bright text.
+    Text word-wraps down the rectangle's rows; a hovered region renders with
+    its full confidence background (highlight) and black text, instead of the
+    dark tint with bright text.
     """
     if hover:
         bg = f"on {conf_rgb_hex(region.confidence)}"
@@ -210,7 +228,9 @@ def _shade_box(
         bg = f"on {tint_hex(region.confidence)}"
         fg = conf_rich_style(region.confidence)
     grid.fill(x0, y0, x1, y1, bg)
-    grid.try_text(x0, y0, _clip_text(region.text, x1 - x0 + 1), f"bold {fg} {bg}")
+    style = f"bold {fg} {bg}"
+    for offset, chunk in enumerate(_wrap_text(region.text, x1 - x0 + 1, y1 - y0 + 1)):
+        grid.try_text(x0, y0 + offset, chunk, style)
 
 
 def conf_rgb_hex(conf: float) -> str:
