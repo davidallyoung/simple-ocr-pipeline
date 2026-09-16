@@ -97,7 +97,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Reprocess files even if their output JSON already exists "
         "(default: skip already-processed files)",
     )
-    return parser.parse_args(argv)
+    parser.add_argument(
+        "--view",
+        nargs="*",
+        metavar="PATH",
+        default=None,
+        help="Inspect existing result JSONs without OCR: a JSON file or a "
+        "directory searched recursively for *.json (default: --output)",
+    )
+    parser.add_argument(
+        "--view-mode",
+        choices=viewer.VIEW_MODES,
+        default=None,
+        help="Apply one view to every target: preview, json, images, inspector "
+        "(default: interactive picker)",
+    )
+    args = parser.parse_args(argv)
+    if args.view is not None:
+        if args.path:
+            parser.error("--view cannot be combined with a positional path")
+        if args.list:
+            parser.error("--view cannot be combined with --list")
+        if args.ocr_only:
+            parser.error("--view cannot be combined with --ocr-only")
+        if args.annotate:
+            parser.error("--view cannot be combined with --annotate")
+    if args.view_mode is not None and args.view is None:
+        parser.error("--view-mode requires --view")
+    return args
 
 
 def count_pages(file: Path, dpi: int) -> int:
@@ -335,13 +362,21 @@ def run_batch(
 
     done_entries = (
         [
-            (job, output.output_path_for(file, anchor, output_dir))
+            viewer.ViewEntry(
+                name=job.name,
+                path=output.output_path_for(file, anchor, output_dir),
+                pages=job.pages_done,
+                chars=job.chars,
+                conf=job.conf,
+                status=job.status,
+            )
             for job, file in zip(t.snapshot(), files, strict=True)
             if job.status in ("done", "skipped")
         ]
         if "json" in formats
         else []
     )
+    viewer.choose_file(console, done_entries)
     viewer.choose_file(console, done_entries)
 
 
@@ -419,6 +454,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     console = Console()
     console.print("[bold]On-prem OCR (EasyOCR)[/]")
+
+    if args.view is not None:
+        targets = [Path(p).expanduser() for p in args.view] or [args.output]
+        return viewer.run_view(console, targets, args.view_mode)
 
     if args.output is not None:
         args.output.mkdir(parents=True, exist_ok=True)

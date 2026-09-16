@@ -11,8 +11,10 @@ red < 0.7, amber 0.7-0.9, green >= 0.9.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 from pathlib import Path
+from subprocess import DEVNULL
 
 import pymupdf
 from PIL import Image, ImageDraw, ImageFont
@@ -229,6 +231,21 @@ def _render_pdf_page(doc: pymupdf.Document, number: int, dpi: int) -> Image.Imag
 
 
 def open_folder(path: Path) -> None:
-    """Open a folder in the platform file manager (Windows-first repo)."""
-    if sys.platform == "win32":
-        os.startfile(path)  # noqa: S606
+    """Open a folder in the platform file manager (best-effort, cross-platform)."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)  # noqa: S606
+        elif sys.platform == "darwin":
+            subprocess.Popen(  # noqa: S603
+                ["open", str(path)],  # noqa: S607
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+            )
+        else:
+            subprocess.Popen(  # noqa: S603
+                ["xdg-open", str(path)],  # noqa: S607
+                stdout=DEVNULL,
+                stderr=DEVNULL,
+            )
+    except OSError:
+        pass

@@ -97,7 +97,7 @@ def test_run_batch_reuses_existing_doc(tmp_path: Path, monkeypatch) -> None:  # 
 
     assert engine.calls == 1  # only b was processed
     assert out_path.read_text(encoding="utf-8") == before  # not clobbered
-    statuses = {job.name: job.status for job, _ in captured}
+    statuses = {entry.name: entry.status for entry in captured}
     assert statuses == {"a.png": "skipped", "b.png": "done"}
 
 

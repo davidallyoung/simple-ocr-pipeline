@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from subprocess import DEVNULL
 
 import pymupdf
 import pytest
@@ -196,6 +197,45 @@ def test_pages_dir_and_file_naming(tmp_path: Path) -> None:
     assert annotate.page_file_for(tmp_path, 7).name == "page-007.png"
 
 
-def test_open_folder_is_noop_off_windows(tmp_path: Path, monkeypatch) -> None:
+def test_open_folder_uses_open_on_darwin(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(annotate.sys, "platform", "darwin")
+    calls: list[tuple[list[str], object, object]] = []
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs.get("stdout"), kwargs.get("stderr")))
+        return None
+
+    monkeypatch.setattr(annotate.subprocess, "Popen", fake_popen)
+    annotate.open_folder(tmp_path)
+    assert calls == [(["open", str(tmp_path)], DEVNULL, DEVNULL)]
+
+
+def test_open_folder_uses_xdg_open_on_linux(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setattr(annotate.sys, "platform", "linux")
+    calls: list[tuple[list[str], object, object]] = []
+
+    def fake_popen(args, **kwargs):
+        calls.append((args, kwargs.get("stdout"), kwargs.get("stderr")))
+        return None
+
+    monkeypatch.setattr(annotate.subprocess, "Popen", fake_popen)
+    annotate.open_folder(tmp_path)
+    assert calls == [(["xdg-open", str(tmp_path)], DEVNULL, DEVNULL)]
+
+
+def test_open_folder_uses_startfile_on_windows(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(annotate.sys, "platform", "win32")
+    opened: list[Path] = []
+    monkeypatch.setattr(annotate.os, "startfile", lambda p: opened.append(p), raising=False)
+    annotate.open_folder(tmp_path)
+    assert opened == [tmp_path]
+
+
+def test_open_folder_swallows_oserror(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr(annotate.sys, "platform", "darwin")
+
+    def boom(*_args, **_kwargs):
+        raise OSError("no file manager")
+
+    monkeypatch.setattr(annotate.subprocess, "Popen", boom)
     annotate.open_folder(tmp_path)  # must not raise
