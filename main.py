@@ -7,6 +7,7 @@ import io
 import sys
 import threading
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image
@@ -90,6 +91,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="Also write one combined text/markdown file for the whole batch",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Reprocess files even if their output JSON already exists "
+        "(default: skip already-processed files)",
+    )
     return parser.parse_args(argv)
 
 
@@ -121,6 +128,76 @@ def pdf_via_liteparse(
     return lite.parse_pdf(file, engine, dpi=args.dpi, use_ocr=use_ocr, language=language)
 
 
+@dataclass
+class BatchPlan:
+    """Partition of a batch into work to run and outputs to reuse.
+
+    ``queued`` holds ``(index, file, page_count)`` for files that will be
+    processed; ``skipped`` holds ``(index, file, out_path, doc)`` for files
+    whose complete, config-compatible output already exists.
+    """
+
+    queued: list[tuple[int, Path, int]]
+    skipped: list[tuple[int, Path, Path, dict]]
+
+
+def plan_batch(
+    files: list[Path],
+    anchor: Path,
+    output_dir: Path,
+    *,
+    dpi: int,
+    languages: list[str],
+    force: bool = False,
+    require_easyocr: bool = False,
+) -> BatchPlan:
+    """Pre-pass deciding which files to process and which to reuse.
+
+    Runs before the TUI/worker start so skipped PDFs are never opened: the
+    page count for reused files comes from the cached JSON, not the source.
+    """
+    queued: list[tuple[int, Path, int]] = []
+    skipped: list[tuple[int, Path, Path, dict]] = []
+    for index, file in enumerate(files):
+        out_path = output.output_path_for(file, anchor, output_dir)
+        if not force:
+            doc = output.existing_document(
+                out_path,
+                file,
+                dpi=dpi,
+                languages=languages,
+                require_easyocr=require_easyocr,
+            )
+            if doc is not None:
+                skipped.append((index, file, out_path, doc))
+                continue
+        queued.append((index, file, count_pages(file, dpi)))
+    return BatchPlan(queued=queued, skipped=skipped)
+
+
+def _ensure_annotations(
+    out_path: Path, doc: dict, dpi: int, console: Console
+) -> None:
+    """Regenerate annotated PNGs for a reused document, missing pages only.
+
+    Best-effort: annotation failures must never fail an otherwise resumed run.
+    """
+    try:
+        pages_dir = annotate.pages_dir_for(out_path)
+        pages = annotate.pages_from_document(doc)
+        missing = [
+            page
+            for page in pages
+            if not annotate.page_file_for(pages_dir, page.number).exists()
+        ]
+        if not missing:
+            return
+        source = Path(str(doc.get("source", "")))
+        annotate.annotate_document(source, missing, dpi=dpi, out_dir=pages_dir)
+    except Exception as exc:  # annotation is best-effort
+        console.print(f"[yellow]Annotation failed for {out_path.name}: {exc!r}[/]")
+
+
 def run_batch(
     files: list[Path],
     anchor: Path,
@@ -130,15 +207,29 @@ def run_batch(
     console: Console,
 ) -> None:
     formats = list(args.formats)
-    pages_total = sum(count_pages(f, args.dpi) for f in files)
+    plan = plan_batch(
+        files,
+        anchor,
+        output_dir,
+        dpi=args.dpi,
+        languages=engine.languages,
+        force=args.force,
+        require_easyocr=args.ocr_only,
+    )
+    pages_total = sum(pages for _, _, pages in plan.queued)
     t = tui.Tui()
     t.begin([f.name for f in files], pages_total)
     combine_entries: list[tuple[str, list[output.Page]]] = []
 
+    for index, _file, out_path, doc in plan.skipped:
+        t.mark_skipped(index, *output.document_stats(doc))
+        if args.annotate:
+            _ensure_annotations(out_path, doc, args.dpi, console)
+
     def worker() -> None:
-        for index, file in enumerate(files):
+        for index, file, page_count in plan.queued:
             try:
-                t.start_file(index, pages_total=count_pages(file, args.dpi))
+                t.start_file(index, pages_total=page_count)
                 doc_pages: list[output.Page] = []
                 used_liteparse = False
                 if file.suffix.lower() == ".pdf" and not args.ocr_only:
@@ -246,7 +337,7 @@ def run_batch(
         [
             (job, output.output_path_for(file, anchor, output_dir))
             for job, file in zip(t.snapshot(), files, strict=True)
-            if job.status == "done"
+            if job.status in ("done", "skipped")
         ]
         if "json" in formats
         else []
@@ -276,13 +367,44 @@ def handle_batch_input(
         return True
 
     if args.list:
+        plan = plan_batch(
+            files,
+            anchor,
+            args.output,
+            dpi=args.dpi,
+            languages=engine.languages,
+            force=args.force,
+            require_easyocr=args.ocr_only,
+        )
         console.print(f"{len(files)} file(s):")
         total_pages = 0
-        for file in files:
-            pages = count_pages(file, args.dpi)
-            total_pages += pages
-            console.print(f"  [cyan]{file}[/]  ({pages} {'page' if pages == 1 else 'pages'})")
-        console.print(f"Total: {total_pages} pages")
+        skipped = 0
+        entries: list[tuple[int, Path, int, dict | None]] = [
+            (index, file, pages, None) for index, file, pages in plan.queued
+        ]
+        entries += [
+            (index, file, output.document_stats(doc)[0], doc)
+            for index, file, _out_path, doc in plan.skipped
+        ]
+        for _index, file, pages, doc in sorted(entries, key=lambda entry: entry[0]):
+            if doc is None:
+                total_pages += pages
+                console.print(
+                    f"  [cyan]{file}[/]  ({pages} {'page' if pages == 1 else 'pages'})"
+                )
+            else:
+                skipped += 1
+                console.print(
+                    f"  [yellow]{file}[/]  (already processed, "
+                    f"{pages} {'page' if pages == 1 else 'pages'})"
+                )
+        if skipped:
+            console.print(
+                f"Total: {total_pages} pages to process "
+                f"({skipped} already processed)"
+            )
+        else:
+            console.print(f"Total: {total_pages} pages")
         return True
 
     run_batch(files, anchor, args.output, engine, args, console)

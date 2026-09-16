@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -135,5 +137,95 @@ def output_path_for(source: Path, anchor: Path, output_dir: Path) -> Path:
 
 
 def write_document(document: dict, out_path: Path) -> None:
+    """Write ``document`` to ``out_path`` atomically.
+
+    The JSON is serialized to a temporary file in the destination directory
+    (dotted name ending in ``.tmp`` so ``ingest`` never picks it up) and then
+    moved into place with :func:`os.replace`, so a crash mid-write can never
+    leave a truncated/partial JSON behind.
+    """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(json.dumps(document, indent=2), encoding="utf-8")
+    payload = json.dumps(document, indent=2)
+    fd, tmp_name = tempfile.mkstemp(
+        dir=out_path.parent, prefix=f".{out_path.name}.", suffix=".tmp"
+    )
+    tmp = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+        os.replace(tmp, out_path)
+    except Exception:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
+
+def _same_source(stored: object, expected: str) -> bool:
+    """Compare stored/expected sources case-insensitively (Windows-friendly)."""
+    try:
+        return os.path.normcase(str(stored)) == os.path.normcase(expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def existing_document(
+    path: Path,
+    source: Path,
+    *,
+    dpi: int,
+    languages: list[str],
+    require_easyocr: bool = False,
+) -> dict | None:
+    """Return a prior output document if it is complete and config-compatible.
+
+    Reuse is keyed on the output JSON plus the source path, ``dpi`` and
+    language list, so re-running a folder can skip work that is already done
+    without silently mixing results from a different configuration. Returns
+    ``None`` when ``path`` is missing/empty, not valid JSON, structurally
+    incomplete, or was produced with a different configuration.
+    """
+    try:
+        if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
+            return None
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(loaded, dict):
+        return None
+    pages = loaded.get("pages")
+    if not isinstance(pages, list):
+        return None
+    page_count = loaded.get("page_count")
+    if page_count is not None and page_count != len(pages):
+        return None
+    if loaded.get("source") is not None and not _same_source(
+        loaded.get("source"), str(source.resolve())
+    ):
+        return None
+    stored_dpi = loaded.get("dpi")
+    if stored_dpi is not None and stored_dpi != dpi:
+        return None
+    stored_languages = loaded.get("language")
+    if stored_languages is not None and stored_languages != languages:
+        return None
+    if require_easyocr and loaded.get("engine") != "easyocr":
+        return None
+    return loaded
+
+
+def document_stats(doc: dict) -> tuple[int, int, float]:
+    """Return ``(page_count, total_chars, mean_confidence)`` for a document."""
+    pages = doc.get("pages", [])
+    if not isinstance(pages, list):
+        return 0, 0, 0.0
+    chars = 0
+    conf_sum = 0.0
+    for page in pages:
+        if not isinstance(page, dict):
+            continue
+        chars += int(page.get("text_char_count", 0) or 0)
+        conf_sum += float(page.get("mean_confidence", 0.0) or 0.0)
+    mean_conf = conf_sum / len(pages) if pages else 0.0
+    return len(pages), chars, mean_conf

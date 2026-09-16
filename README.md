@@ -28,6 +28,9 @@ EasyOCR GPU server. Standalone images use EasyOCR directly.
   and prompted for the next path — or quit.
 - Per-file error isolation: a bad file is marked `failed` and the batch
   continues.
+- **Resumable runs**: re-running a folder reuses completed outputs and marks
+  them `skipped`, so you only pay for the work that is actually missing. Pass
+  `--force` to reprocess and overwrite everything.
 - `--list` dry-run to enumerate files/page counts without running OCR.
 
 ## Requirements
@@ -78,6 +81,8 @@ Options:
 --format LIST    Comma-separated output formats: json,txt,md
                  (default: json,txt; alias: --formats)
 --combine        Also write one combined text/markdown file for the whole batch
+--force          Reprocess files even if their output JSON already exists
+                 (default: skip already-processed files)
 ```
 
 Example dry run:
@@ -161,3 +166,12 @@ uv run mypy .
   unnecessarily, compare against `--ocr-only` and consider raising `--dpi`.
 - The embedded EasyOCR server binds `127.0.0.1` on an ephemeral port for the
   session and is closed automatically on exit.
+- **Reuse is keyed on the output JSON plus the source path, `--dpi` and
+  `--lang`.** Change any of those (or the output location) and the file is
+  reprocessed; `--ocr-only` also rejects a JSON produced via LiteParse.
+- Editing a source file **alone** does not trigger reprocessing (no content
+  hash is stored) — use `--force` to redo a file in place.
+- Output JSONs are written **atomically** (temp file + `os.replace`), so an
+  interrupted run never leaves a truncated result behind.
+- With `--annotate`, a reused file regenerates only the page images that are
+  missing, so a partial annotation run resumes cheaply too.
