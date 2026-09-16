@@ -76,14 +76,21 @@ def _companion_names(json_path: Path) -> list[str]:
 
 
 def _print_text(console: Console, json_path: Path) -> None:
-    """Print the ``.txt`` sibling, falling back to text rebuilt from the JSON."""
+    """Print the ``.txt`` sibling, falling back to text rebuilt from the JSON.
+
+    OCR text is untrusted input for Rich's markup parser: bracketed tokens
+    (``[a]``, ``[/]`` ...) would otherwise be parsed as style tags and
+    silently dropped, and an unbalanced closing tag raises ``MarkupError``.
+    Wrapping in ``Text`` renders it verbatim.
+    """
     txt_path = export.text_path_for(json_path)
     if txt_path.exists():
-        console.print(txt_path.read_text(encoding="utf-8"))
+        console.print(Text(txt_path.read_text(encoding="utf-8")))
         return
     if json_path.exists():
         doc = json.loads(json_path.read_text(encoding="utf-8"))
-        console.print(export.render_text(annotate.pages_from_document(doc)))
+        rendered = export.render_text(annotate.pages_from_document(doc))
+        console.print(Text(rendered))
         return
     console.print(f"[red]No text output found for {json_path.name}.[/]")
 

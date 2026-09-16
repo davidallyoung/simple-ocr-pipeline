@@ -372,3 +372,46 @@ def test_viewer_p_errors_when_no_text(tmp_path: Path, monkeypatch) -> None:  # n
     console = Console(record=True)
     viewer.choose_file(console, [(job, json_path)])
     assert "No text output found" in console.export_text()
+
+
+def test_viewer_p_prints_markup_like_text_verbatim(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
+    """Bracket tokens in OCR text must not be parsed as Rich markup.
+
+    Regression: printing the raw string let Rich swallow tokens like ``[a]``
+    as style tags and raise ``MarkupError`` on an unbalanced ``[/]``.
+    """
+    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
+    json_path = tmp_path / "x.pdf.json"
+    (tmp_path / "x.pdf.txt").write_text(
+        "Section [a] covers intro\nand [/] closes nothing", encoding="utf-8"
+    )
+
+    answers = iter(["p", ""])
+    monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
+    console = Console(record=True)
+    viewer.choose_file(console, [(job, json_path)])  # must not raise
+    text = console.export_text()
+    assert "Section [a] covers intro" in text
+    assert "and [/] closes nothing" in text
+
+
+def test_viewer_p_falls_back_to_json_markup_verbatim(
+    tmp_path: Path, monkeypatch
+) -> None:  # noqa: ANN001
+    """Same guarantee for the JSON-rebuilt fallback path."""
+    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
+    lines = [_line("citation [12] and tag [ipsum]"), _line("lone closer [/]")]
+    pages = [output.Page(number=1, lines=lines)]
+    doc = output.build_document(tmp_path / "x.pdf", pages, "easyocr", ["en"])
+    json_path = tmp_path / "x.pdf.json"
+    json_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    answers = iter(["p", ""])
+    monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
+    console = Console(record=True)
+    viewer.choose_file(console, [(job, json_path)])  # must not raise
+    text = console.export_text()
+    assert "citation [12] and tag [ipsum]" in text
+    assert "lone closer [/]" in text
