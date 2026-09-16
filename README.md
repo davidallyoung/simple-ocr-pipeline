@@ -20,8 +20,10 @@ EasyOCR GPU server. Standalone images use EasyOCR directly.
 - **Live TUI** while processing: per-file status table, running page counts,
   per-page character/confidence stats (moving average), overall progress and
   ETA.
-- Results are written as **JSON** (per source file) to a central output
-  directory, mirroring the input folder structure.
+- Results are written per source file to a central output directory,
+  mirroring the input folder structure: lossless **JSON** plus human-readable
+  **plain text** (`.txt`) and **Markdown** (`.md`) siblings. Pick formats with
+  `--format`, and add `--combine` for a single whole-batch text/Markdown file.
 - Interactive loop: after a batch finishes, you're told where results landed
   and prompted for the next path — or quit.
 - Per-file error isolation: a bad file is marked `failed` and the batch
@@ -71,6 +73,11 @@ Options:
 --list           Dry run: list files and page counts, no OCR
 --ocr-only       PDFs: rasterize every page and OCR with EasyOCR directly
                  (bypass LiteParse text-layer extraction)
+--annotate       Write per-page PNGs with OCR boxes overlaid, colored by
+                 confidence (output/<file>.pages/page-NNN.png)
+--format LIST    Comma-separated output formats: json,txt,md
+                 (default: json,txt; alias: --formats)
+--combine        Also write one combined text/markdown file for the whole batch
 ```
 
 Example dry run:
@@ -88,14 +95,26 @@ output\C:\some\scans\...   ->   output\<relative-path>.json
 ```
 
 Wait — paths on Windows are rooted, so mirroring is relative to the anchor.
-For a **single file** the JSON is written flat as `output\<name>.<ext>.json`.
+For a **single file** results are written flat as `output\<name>.<ext>.json`.
 For a **folder**, the path *relative to that folder* is preserved under
 `output\`.
+
+By default each JSON is accompanied by `.txt` and `.md` siblings named by
+stripping the `.json` suffix (`report.pdf.json` -> `report.pdf.txt` /
+`report.pdf.md`). Text files are written UTF-8 with LF-only newlines (any
+`\r\n`/`\r` is normalized), so they diff cleanly and open anywhere.
+`--format txt,md` (or `--format json`) narrows what is written. With
+`--combine`, the whole batch gets one file named after the input
+(`output\<name-or-folder>.txt` and/or `.md`), with per-file section headers
+for text and nested `##` headings for Markdown. Selecting a format list
+without `json` also disables the JSON-based inspection actions below (the `j`
+dump and the `t` inspector), since there is no JSON to read.
 
 After each batch, the TUI offers to **inspect the generated results**:
 enter a file's number to see a rendered view (per-page text, per-line
 confidence and bounding box), add a `j` suffix (e.g. `2j`) to dump the raw
-JSON, or press Enter to continue to the next-path prompt.
+JSON, add a `p` suffix (e.g. `2p`) to print the plain-text sibling, or press
+Enter to continue to the next-path prompt.
 
 Each JSON looks like:
 

@@ -13,7 +13,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 from rich.text import Text
 
-from app import annotate, canvas, tui
+from app import annotate, canvas, export, tui
 
 
 def _conf_style(conf: float) -> str:
@@ -66,6 +66,35 @@ def render_document(console: Console, doc: dict) -> None:
     console.print(f"JSON: [cyan]{json_path}[/]")
 
 
+def _companion_names(json_path: Path) -> list[str]:
+    """Names of existing ``.txt``/``.md`` siblings for a result JSON."""
+    names: list[str] = []
+    for path in (export.text_path_for(json_path), export.markdown_path_for(json_path)):
+        if path.exists():
+            names.append(path.name)
+    return names
+
+
+def _print_text(console: Console, json_path: Path) -> None:
+    """Print the ``.txt`` sibling, falling back to text rebuilt from the JSON.
+
+    OCR text is untrusted input for Rich's markup parser: bracketed tokens
+    (``[a]``, ``[/]`` ...) would otherwise be parsed as style tags and
+    silently dropped, and an unbalanced closing tag raises ``MarkupError``.
+    Wrapping in ``Text`` renders it verbatim.
+    """
+    txt_path = export.text_path_for(json_path)
+    if txt_path.exists():
+        console.print(Text(txt_path.read_text(encoding="utf-8")))
+        return
+    if json_path.exists():
+        doc = json.loads(json_path.read_text(encoding="utf-8"))
+        rendered = export.render_text(annotate.pages_from_document(doc))
+        console.print(Text(rendered))
+        return
+    console.print(f"[red]No text output found for {json_path.name}.[/]")
+
+
 def choose_file(
     console: Console, entries: list[tuple[tui.FileJob, Path]]
 ) -> None:
@@ -79,22 +108,26 @@ def choose_file(
         return
 
     console.print("[bold]Inspect generated results:[/]")
-    for idx, (job, _path) in enumerate(jobs, start=1):
+    for idx, (job, path) in enumerate(jobs, start=1):
+        companions = _companion_names(path)
+        extra = f"  [dim]· {', '.join(companions)}[/]" if companions else ""
         console.print(
             f"  [cyan]{idx}[/]  {job.name}  "
             f"[dim]({job.pages_done}/{job.pages_total} pg · "
-            f"{job.chars} chars · conf {job.conf:.2f})[/]"
+            f"{job.chars} chars · conf {job.conf:.2f})[/]{extra}"
         )
     console.print("  [dim]Hint: enter a number to preview, add [bold]j[/bold] for raw "
-                  "JSON, [bold]v[/bold] for annotated page images, or [bold]t[/bold] for "
+                  "JSON, [bold]p[/bold] for plain text, [bold]v[/bold] for annotated "
+                  "page images, or [bold]t[/bold] for "
                   "the interactive inspector "
-                  "(e.g. [bold]1t[/bold]; bare v/j/t applies to the only file), "
+                  "(e.g. [bold]1t[/bold]; bare j/p/v/t applies to the only file), "
                   "or Enter to continue.[/]")
 
     while True:
         try:
             raw = Prompt.ask(
-                "[bold]Inspect?[/] (number; [dim]j[/dim] JSON, [dim]v[/dim] images, "
+                "[bold]Inspect?[/] (number; [dim]j[/dim] JSON, [dim]p[/dim] text, "
+                "[dim]v[/dim] images, "
                 "[dim]t[/dim] inspector, [dim]Enter[/dim] to skip)"
             )
         except EOFError:
@@ -103,11 +136,11 @@ def choose_file(
         if not choice:
             return
         action = choice[-1:]
-        flagged = action in ("j", "v", "t")
+        flagged = action in ("j", "p", "v", "t")
         if flagged:
             choice = choice[:-1]
         if not choice:
-            # Bare "j"/"v"/"t": only unambiguous when a single file completed.
+            # Bare "j"/"p"/"v"/"t": only unambiguous when a single file completed.
             if len(jobs) == 1:
                 choice = "1"
             else:
@@ -124,6 +157,9 @@ def choose_file(
             continue
 
         job, path = jobs[idx]
+        if action == "p":
+            _print_text(console, path)
+            continue
         if not path.exists():
             console.print(f"[red]Output missing: {path}[/]")
             continue

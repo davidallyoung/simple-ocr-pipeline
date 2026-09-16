@@ -15,6 +15,7 @@ from rich.prompt import Prompt
 
 from app import (
     annotate,
+    export,
     ingest,
     lite,
     lite_server,
@@ -27,6 +28,13 @@ from app import (
 from app.engine import OcrEngine, cuda_available
 
 DEFAULT_OUTPUT = Path("output")
+
+
+def _formats_arg(value: str) -> list[str]:
+    try:
+        return export.parse_formats(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -69,6 +77,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Write per-page PNGs with OCR boxes overlaid, colored by "
         "confidence (output/<file>.pages/page-NNN.png)",
     )
+    parser.add_argument(
+        "--format",
+        "--formats",
+        dest="formats",
+        type=_formats_arg,
+        default=export.parse_formats("json,txt"),
+        help="Comma-separated output formats: json,txt,md (default: json,txt)",
+    )
+    parser.add_argument(
+        "--combine",
+        action="store_true",
+        help="Also write one combined text/markdown file for the whole batch",
+    )
     return parser.parse_args(argv)
 
 
@@ -108,9 +129,11 @@ def run_batch(
     args: argparse.Namespace,
     console: Console,
 ) -> None:
+    formats = list(args.formats)
     pages_total = sum(count_pages(f, args.dpi) for f in files)
     t = tui.Tui()
     t.begin([f.name for f in files], pages_total)
+    combine_entries: list[tuple[str, list[output.Page]]] = []
 
     def worker() -> None:
         for index, file in enumerate(files):
@@ -160,7 +183,21 @@ def run_batch(
                     dpi=args.dpi,
                 )
                 out_path = output.output_path_for(file, anchor, output_dir)
-                output.write_document(doc, out_path)
+                if "json" in formats:
+                    output.write_document(doc, out_path)
+                if "txt" in formats:
+                    export.write_text(
+                        export.render_text(doc_pages), export.text_path_for(out_path)
+                    )
+                if "md" in formats:
+                    export.write_text(
+                        export.render_markdown(doc_pages, title=file.name),
+                        export.markdown_path_for(out_path),
+                    )
+                if args.combine and ("txt" in formats or "md" in formats):
+                    combine_entries.append(
+                        (export.relative_label(file, anchor), doc_pages)
+                    )
                 t.finish_file(index)
                 if args.annotate and doc_pages:
                     try:
@@ -180,13 +217,40 @@ def run_batch(
     tui.run_live(t, worker_done)
     worker_thread.join()
 
-    tui.render_completion(t.snapshot(), str(output_dir.resolve()))
+    combined: list[Path] = []
+    if args.combine:
+        if "txt" in formats or "md" in formats:
+            combined = export.write_combined(
+                combine_entries,
+                anchor=anchor,
+                files=files,
+                output_dir=output_dir,
+                formats=formats,
+            )
+            for path in combined:
+                console.print(f"[green]Combined[/] {path}")
+        else:
+            console.print(
+                "[yellow]--combine ignored: select a text format "
+                "(txt and/or md) to combine.[/]"
+            )
 
-    done_entries = [
-        (job, output.output_path_for(file, anchor, output_dir))
-        for job, file in zip(t.snapshot(), files, strict=True)
-        if job.status == "done"
-    ]
+    tui.render_completion(
+        t.snapshot(),
+        str(output_dir.resolve()),
+        formats=formats,
+        combined=combined,
+    )
+
+    done_entries = (
+        [
+            (job, output.output_path_for(file, anchor, output_dir))
+            for job, file in zip(t.snapshot(), files, strict=True)
+            if job.status == "done"
+        ]
+        if "json" in formats
+        else []
+    )
     viewer.choose_file(console, done_entries)
 
 

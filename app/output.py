@@ -112,6 +112,18 @@ def build_document(
     }
 
 
+def relative_source_path(source: Path, anchor: Path) -> Path:
+    """The path of ``source`` relative to ``anchor`` (falling back to the name).
+
+    Mirrors the input folder structure under the output dir; a source outside
+    the anchor collapses to its bare name.
+    """
+    try:
+        return source.resolve().relative_to(anchor.resolve())
+    except ValueError:
+        return Path(source.name)
+
+
 def output_path_for(source: Path, anchor: Path, output_dir: Path) -> Path:
     """Map a source file to its JSON location under the central output dir.
 
@@ -119,11 +131,7 @@ def output_path_for(source: Path, anchor: Path, output_dir: Path) -> Path:
     for a single file). The original extension is kept to avoid collisions
     (``report.pdf`` -> ``report.pdf.json``).
     """
-    try:
-        rel = source.resolve().relative_to(anchor.resolve())
-    except ValueError:
-        rel = Path(source.name)
-    return output_dir / f"{rel}.json"
+    return output_dir / f"{relative_source_path(source, anchor)}.json"
 
 
 def write_document(document: dict, out_path: Path) -> None:
