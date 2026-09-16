@@ -32,6 +32,9 @@ EasyOCR GPU server. Standalone images use EasyOCR directly.
   them `skipped`, so you only pay for the work that is actually missing. Pass
   `--force` to reprocess and overwrite everything.
 - `--list` dry-run to enumerate files/page counts without running OCR.
+- **Standalone viewer**: `--view` inspects existing result JSONs (a file, a
+  folder, or several paths) without running OCR — preview, raw JSON, annotated
+  page images, or the full-screen inspector.
 
 ## Requirements
 
@@ -83,6 +86,20 @@ Options:
 --combine        Also write one combined text/markdown file for the whole batch
 --force          Reprocess files even if their output JSON already exists
                  (default: skip already-processed files)
+--view [PATH...] Inspect existing result JSONs instead of OCR: a JSON file, a
+                 directory (searched recursively for *.json), or several paths
+                 (default: ./output). Processing flags (--dpi/--lang/--cpu/
+                 --ocr-only/--list/--annotate) are ignored in view mode.
+--view-mode MODE preview, json, images, or inspector (requires --view;
+                 default: interactive picker)
+```
+
+Re-open earlier results without re-running OCR:
+
+```powershell
+uv run main.py --view                          # scan ./output
+uv run main.py --view output\C:\some\scans     # scan a results folder
+uv run main.py --view output\report.pdf.json --view-mode json
 ```
 
 Example dry run:
@@ -118,8 +135,12 @@ dump and the `t` inspector), since there is no JSON to read.
 After each batch, the TUI offers to **inspect the generated results**:
 enter a file's number to see a rendered view (per-page text, per-line
 confidence and bounding box), add a `j` suffix (e.g. `2j`) to dump the raw
-JSON, add a `p` suffix (e.g. `2p`) to print the plain-text sibling, or press
-Enter to continue to the next-path prompt.
+JSON, add a `p` suffix (e.g. `2p`) to print the plain-text sibling, a `v`
+suffix (e.g. `2v`) to write annotated page PNGs to `<name>.pages/page-NNN.png`,
+or a `t` suffix to launch the full-screen hover inspector. A bare
+`v`/`j`/`p`/`t` applies to the only completed file; press Enter
+to continue to the next-path prompt. The same picker is available later via
+`--view`.
 
 Each JSON looks like:
 

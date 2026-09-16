@@ -229,44 +229,49 @@ def test_viewer_renders_document(tmp_path: Path) -> None:
 
 
 def test_choose_file_skips_when_no_done(tmp_path: Path) -> None:
-    job = viewer.tui.FileJob(name="x.png", status="failed")
+    entry = viewer.ViewEntry(name="x.png", path=tmp_path / "x.png.json", status="failed")
     console = Console(record=True)
-    viewer.choose_file(console, [(job, tmp_path / "x.png.json")])
+    viewer.choose_file(console, [entry])
     assert "Inspect" not in console.export_text()
 
 
 def test_choose_file_bare_v_targets_single_file(tmp_path: Path, monkeypatch) -> None:
-    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
     json_path = tmp_path / "x.pdf.json"
     json_path.write_text("{}", encoding="utf-8")
+    entry = viewer.ViewEntry(name="x.pdf", path=json_path, pages=1)
 
-    prompted: list[str] = []
+    prompted: list[Path] = []
 
     def fake_ask(*_args, **_kwargs) -> str:
         return "v" if not prompted else ""
 
+    def fake_annotate(_console, _doc, json_path, *, reveal=True) -> bool:
+        prompted.append(json_path)
+        return True
+
     monkeypatch.setattr(viewer.Prompt, "ask", fake_ask)
-    monkeypatch.setattr(
-        viewer, "_annotate_document", lambda c, d, p: prompted.append(p)
-    )
+    monkeypatch.setattr(viewer, "_annotate_document", fake_annotate)
     console = Console(record=True)
-    viewer.choose_file(console, [(job, json_path)])
+    viewer.choose_file(console, [entry])
     assert prompted == [json_path]
 
 
 def test_choose_file_bare_v_ambiguous_with_multiple_files(
     tmp_path: Path, monkeypatch
 ) -> None:
-    jobs = [
-        (viewer.tui.FileJob(name="a.pdf", status="done"), tmp_path / "a.pdf.json"),
-        (viewer.tui.FileJob(name="b.pdf", status="done"), tmp_path / "b.pdf.json"),
+    entries = [
+        viewer.ViewEntry(name="a.pdf", path=tmp_path / "a.pdf.json"),
+        viewer.ViewEntry(name="b.pdf", path=tmp_path / "b.pdf.json"),
     ]
     answers = iter(["v", ""])
     monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
     annotated: list[Path] = []
-    monkeypatch.setattr(
-        viewer, "_annotate_document", lambda c, d, p: annotated.append(p)
-    )
+
+    def fake_annotate(_console, _doc, json_path, *, reveal=True) -> bool:
+        annotated.append(json_path)
+        return True
+
+    monkeypatch.setattr(viewer, "_annotate_document", fake_annotate)
     console = Console(record=True)
-    viewer.choose_file(console, jobs)
+    viewer.choose_file(console, entries)
     assert annotated == []  # ambiguous: must ask for a number instead

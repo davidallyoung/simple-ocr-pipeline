@@ -266,6 +266,9 @@ def render_completion(
         console.print(f"Formats: [bold cyan]{', '.join(formats)}[/]")
     for path in combined or ():
         console.print(f"Combined: [bold cyan]{path}[/]")
+    console.print(
+        f"[dim]Re-open results later: [bold]uv run main.py --view[/bold] {output_dir}[/]"
+    )
 
 
 def run_live(tui: Tui, worker_done: Callable[[], bool], interval: float = 0.03) -> None:

@@ -322,55 +322,57 @@ def test_render_completion_reports_formats_and_combined() -> None:
 
 
 def test_viewer_lists_companion_names(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
     json_path = tmp_path / "x.pdf.json"
     json_path.write_text("{}", encoding="utf-8")
     (tmp_path / "x.pdf.txt").write_text("hello", encoding="utf-8")
     (tmp_path / "x.pdf.md").write_text("# hello", encoding="utf-8")
+    entry = viewer.ViewEntry(
+        name="x.pdf", path=json_path, pages=1, chars=5, conf=0.9, status="done"
+    )
 
     monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: "")
     console = Console(record=True)
-    viewer.choose_file(console, [(job, json_path)])
+    viewer.choose_file(console, [entry])
     text = console.export_text()
     assert "x.pdf.txt" in text
     assert "x.pdf.md" in text
 
 
 def test_viewer_p_prints_text_sibling(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
     json_path = tmp_path / "x.pdf.json"
     json_path.write_text("{}", encoding="utf-8")
     (tmp_path / "x.pdf.txt").write_text("printed text", encoding="utf-8")
+    entry = viewer.ViewEntry(name="x.pdf", path=json_path, status="done")
 
     answers = iter(["p", ""])
     monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
     console = Console(record=True)
-    viewer.choose_file(console, [(job, json_path)])
+    viewer.choose_file(console, [entry])
     assert "printed text" in console.export_text()
 
 
 def test_viewer_p_falls_back_to_json(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
-    json_path = tmp_path / "x.pdf.json"
     pages = [output.Page(number=1, lines=[_line("from json")])]
     doc = output.build_document(tmp_path / "x.pdf", pages, "easyocr", ["en"])
+    json_path = tmp_path / "x.pdf.json"
     json_path.write_text(json.dumps(doc), encoding="utf-8")
+    entry = viewer.ViewEntry(name="x.pdf", path=json_path, status="done")
 
     answers = iter(["p", ""])
     monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
     console = Console(record=True)
-    viewer.choose_file(console, [(job, json_path)])
+    viewer.choose_file(console, [entry])
     assert "from json" in console.export_text()
 
 
 def test_viewer_p_errors_when_no_text(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
-    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
     json_path = tmp_path / "x.pdf.json"  # neither JSON nor .txt exists
+    entry = viewer.ViewEntry(name="x.pdf", path=json_path, status="done")
 
     answers = iter(["p", ""])
     monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
     console = Console(record=True)
-    viewer.choose_file(console, [(job, json_path)])
+    viewer.choose_file(console, [entry])
     assert "No text output found" in console.export_text()
 
 
@@ -382,16 +384,16 @@ def test_viewer_p_prints_markup_like_text_verbatim(
     Regression: printing the raw string let Rich swallow tokens like ``[a]``
     as style tags and raise ``MarkupError`` on an unbalanced ``[/]``.
     """
-    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
     json_path = tmp_path / "x.pdf.json"
     (tmp_path / "x.pdf.txt").write_text(
         "Section [a] covers intro\nand [/] closes nothing", encoding="utf-8"
     )
+    entry = viewer.ViewEntry(name="x.pdf", path=json_path, status="done")
 
     answers = iter(["p", ""])
     monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
     console = Console(record=True)
-    viewer.choose_file(console, [(job, json_path)])  # must not raise
+    viewer.choose_file(console, [entry])  # must not raise
     text = console.export_text()
     assert "Section [a] covers intro" in text
     assert "and [/] closes nothing" in text
@@ -401,17 +403,17 @@ def test_viewer_p_falls_back_to_json_markup_verbatim(
     tmp_path: Path, monkeypatch
 ) -> None:  # noqa: ANN001
     """Same guarantee for the JSON-rebuilt fallback path."""
-    job = viewer.tui.FileJob(name="x.pdf", status="done", pages_done=1, pages_total=1)
     lines = [_line("citation [12] and tag [ipsum]"), _line("lone closer [/]")]
     pages = [output.Page(number=1, lines=lines)]
     doc = output.build_document(tmp_path / "x.pdf", pages, "easyocr", ["en"])
     json_path = tmp_path / "x.pdf.json"
     json_path.write_text(json.dumps(doc), encoding="utf-8")
+    entry = viewer.ViewEntry(name="x.pdf", path=json_path, status="done")
 
     answers = iter(["p", ""])
     monkeypatch.setattr(viewer.Prompt, "ask", lambda *a, **k: next(answers))
     console = Console(record=True)
-    viewer.choose_file(console, [(job, json_path)])  # must not raise
+    viewer.choose_file(console, [entry])  # must not raise
     text = console.export_text()
     assert "citation [12] and tag [ipsum]" in text
     assert "lone closer [/]" in text
