@@ -103,7 +103,7 @@ def choose_file(
     Entering a number previews that file; a ``j`` suffix dumps the raw JSON.
     Returns when the user hits Enter with no input.
     """
-    jobs = [(job, path) for job, path in entries if job.status == "done"]
+    jobs = [(job, path) for job, path in entries if job.status in ("done", "skipped")]
     if not jobs:
         return
 

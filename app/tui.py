@@ -27,6 +27,7 @@ STATUS_LABEL = {
     "running": "running",
     "done": "done",
     "failed": "failed",
+    "skipped": "skipped",
 }
 
 STATUS_STYLE = {
@@ -34,6 +35,7 @@ STATUS_STYLE = {
     "running": "bright_cyan",
     "done": "green",
     "failed": "red",
+    "skipped": "yellow",
 }
 
 
@@ -118,6 +120,21 @@ class Tui:
             job.elapsed = time.monotonic() - job.started_at
             self._bump()
 
+    def mark_skipped(
+        self, index: int, pages_total: int = 0, chars: int = 0, conf: float = 0.0
+    ) -> None:
+        """Mark a file as reused from an existing output (no work performed)."""
+        with self.lock:
+            job = self.jobs[index]
+            job.status = "skipped"
+            job.pages_total = pages_total
+            job.pages_done = pages_total
+            job.chars = chars
+            job.conf = conf
+            job.elapsed = 0.0
+            job.started_at = time.monotonic()
+            self._bump()
+
     def fail_file(self, index: int, error: str) -> None:
         with self.lock:
             job = self.jobs[index]
@@ -147,11 +164,13 @@ class Tui:
         for i, job in enumerate(jobs, start=1):
             now = time.monotonic()
             elapsed = (
-                job.elapsed if job.status in ("done", "failed") else now - job.started_at
+                job.elapsed
+                if job.status in ("done", "failed", "skipped")
+                else now - job.started_at
             )
             pages = (
                 f"{job.pages_done}/{job.pages_total}"
-                if job.status in ("running", "done", "failed")
+                if job.status in ("running", "done", "failed", "skipped")
                 else "—"
             )
             status = Text(STATUS_LABEL[job.status], style=STATUS_STYLE[job.status])
@@ -172,8 +191,9 @@ class Tui:
     def _summary(self, jobs: list[FileJob]) -> Text:
         done = sum(1 for j in jobs if j.status == "done")
         failed = sum(1 for j in jobs if j.status == "failed")
+        skipped = sum(1 for j in jobs if j.status == "skipped")
         total = len(jobs)
-        remaining = total - done - failed
+        remaining = total - done - failed - skipped
 
         parts = [f"[bold blue]Files:[/] {total}"]
         if remaining:
@@ -185,6 +205,8 @@ class Tui:
             parts.append(f"[green]{done} done[/]")
         if failed:
             parts.append(f"[red]{failed} failed[/]")
+        if skipped:
+            parts.append(f"[yellow]{skipped} skipped[/]")
         if self.pages_total:
             parts.append(f"[cyan]Pages:[/] {self.pages_done}/{self.pages_total}")
         return Text.from_markup("  ".join(parts))
@@ -198,7 +220,7 @@ class Tui:
             self.header.update(self._header_id, description="Idle")
 
         task_id = self.global_progress.tasks[0].id
-        done = sum(1 for j in jobs if j.status in ("done", "failed"))
+        done = sum(1 for j in jobs if j.status in ("done", "failed", "skipped"))
         self.global_progress.update(task_id, completed=done)
 
         body = Group(self._summary(jobs), self.header, self._table(jobs))
@@ -217,6 +239,7 @@ def render_completion(
         console = Console()
     done = sum(1 for j in jobs if j.status == "done")
     failed = sum(1 for j in jobs if j.status == "failed")
+    skipped = sum(1 for j in jobs if j.status == "skipped")
     table = Table(expand=True, header_style="bold")
     table.add_column("File")
     table.add_column("Status", width=10)
@@ -234,6 +257,8 @@ def render_completion(
         )
     console.print(table)
     console.print(f"[green]Processed {done}/{len(jobs)} files[/]")
+    if skipped:
+        console.print(f"[yellow]{skipped} skipped (existing output reused)[/]")
     if failed:
         console.print(f"[red]{failed} failed[/]")
     console.print(f"Output written to: [bold cyan]{output_dir}[/]")

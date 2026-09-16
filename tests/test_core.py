@@ -80,6 +80,125 @@ def test_output_document_shape(tmp_path: Path) -> None:
     assert data["pages"][0]["paragraphs"][0]["kind"] == "paragraph"
 
 
+def _sample_doc(src: Path, *, dpi: int = 200, engine: str = "easyocr") -> dict:
+    pages = [
+        output.Page(
+            number=1,
+            lines=[output.Line("hello", Quad.from_xywh(0, 0, 1, 1), 0.9)],
+        ),
+        output.Page(number=2, lines=[]),
+    ]
+    return output.build_document(src, pages, engine, ["en"], dpi=dpi)
+
+
+def test_existing_document_accepts_fresh_doc(tmp_path: Path) -> None:
+    src = tmp_path / "a.pdf"
+    src.write_bytes(b"%PDF")
+    out = tmp_path / "a.pdf.json"
+    output.write_document(_sample_doc(src), out)
+
+    doc = output.existing_document(out, src, dpi=200, languages=["en"])
+    assert doc is not None
+    assert doc["page_count"] == 2
+
+
+def test_existing_document_rejects_bad_json_and_empty(tmp_path: Path) -> None:
+    src = tmp_path / "a.pdf"
+    src.write_bytes(b"%PDF")
+    out = tmp_path / "a.pdf.json"
+
+    assert output.existing_document(out, src, dpi=200, languages=["en"]) is None
+
+    out.write_text("", encoding="utf-8")
+    assert output.existing_document(out, src, dpi=200, languages=["en"]) is None
+
+    out.write_text("{not json", encoding="utf-8")
+    assert output.existing_document(out, src, dpi=200, languages=["en"]) is None
+
+    out.write_text('["a list"]', encoding="utf-8")
+    assert output.existing_document(out, src, dpi=200, languages=["en"]) is None
+
+
+def test_existing_document_rejects_mismatches(tmp_path: Path) -> None:
+    src = tmp_path / "a.pdf"
+    src.write_bytes(b"%PDF")
+    out = tmp_path / "a.pdf.json"
+    output.write_document(_sample_doc(src), out)
+
+    # page_count no longer matches the pages list
+    broken = json.loads(out.read_text(encoding="utf-8"))
+    broken["page_count"] = 5
+    out.write_text(json.dumps(broken), encoding="utf-8")
+    assert output.existing_document(out, src, dpi=200, languages=["en"]) is None
+
+    # dpi mismatch
+    output.write_document(_sample_doc(src, dpi=200), out)
+    assert output.existing_document(out, src, dpi=300, languages=["en"]) is None
+
+    # language mismatch
+    assert output.existing_document(out, src, dpi=200, languages=["fr"]) is None
+
+    # source mismatch
+    other = tmp_path / "b.pdf"
+    other.write_bytes(b"%PDF")
+    assert output.existing_document(out, other, dpi=200, languages=["en"]) is None
+
+
+def test_existing_document_require_easyocr(tmp_path: Path) -> None:
+    src = tmp_path / "a.pdf"
+    src.write_bytes(b"%PDF")
+    out = tmp_path / "a.pdf.json"
+    output.write_document(_sample_doc(src, engine="liteparse"), out)
+
+    assert output.existing_document(out, src, dpi=200, languages=["en"]) is not None
+    assert (
+        output.existing_document(
+            out, src, dpi=200, languages=["en"], require_easyocr=True
+        )
+        is None
+    )
+
+
+def test_write_document_is_atomic_and_leaves_no_temp(tmp_path: Path) -> None:
+    src = tmp_path / "a.png"
+    out = tmp_path / "out" / "a.png.json"
+    output.write_document(_sample_doc(src), out)
+
+    assert out.exists()
+    assert json.loads(out.read_text(encoding="utf-8"))["page_count"] == 2
+    leftovers = list(out.parent.glob(f".{out.name}.*.tmp"))
+    assert leftovers == []
+
+
+def test_write_document_cleans_up_on_replace_failure(
+    tmp_path: Path, monkeypatch
+) -> None:
+    out = tmp_path / "out" / "a.png.json"
+
+    def boom(_src, _dst) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(output.os, "replace", boom)
+    try:
+        output.write_document({"pages": []}, out)
+        raise AssertionError("expected OSError")
+    except OSError:
+        pass
+    assert not out.exists()
+    assert list(out.parent.glob(f".{out.name}.*.tmp")) == []
+
+
+def test_document_stats() -> None:
+    doc = {
+        "pages": [
+            {"text_char_count": 10, "mean_confidence": 0.8},
+            {"text_char_count": 20, "mean_confidence": 0.6},
+        ]
+    }
+    assert output.document_stats(doc) == (2, 30, 0.7)
+    assert output.document_stats({"pages": []}) == (0, 0, 0.0)
+
+
 def test_page_regions_prefer_paragraphs() -> None:
     lines = [output.Line(text="a", box=Quad.from_xywh(0, 0, 1, 1), confidence=1.0)]
     paras = [output.Paragraph(text="a b", box=Quad.from_xywh(0, 0, 2, 2), confidence=0.9)]
