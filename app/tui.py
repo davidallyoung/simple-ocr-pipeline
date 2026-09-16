@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from threading import Lock
 
 from rich.console import Console, Group
@@ -204,9 +205,16 @@ class Tui:
         return Panel(body, title="[bold] OCR In Progress [/]", border_style="blue")
 
 
-def render_completion(jobs: list[FileJob], output_dir: str) -> None:
+def render_completion(
+    jobs: list[FileJob],
+    output_dir: str,
+    formats: Sequence[str] | None = None,
+    combined: Sequence[Path] | None = None,
+    console: Console | None = None,
+) -> None:
     """Static summary printed after the Live view closes."""
-    console = Console()
+    if console is None:
+        console = Console()
     done = sum(1 for j in jobs if j.status == "done")
     failed = sum(1 for j in jobs if j.status == "failed")
     table = Table(expand=True, header_style="bold")
@@ -229,6 +237,10 @@ def render_completion(jobs: list[FileJob], output_dir: str) -> None:
     if failed:
         console.print(f"[red]{failed} failed[/]")
     console.print(f"Output written to: [bold cyan]{output_dir}[/]")
+    if formats:
+        console.print(f"Formats: [bold cyan]{', '.join(formats)}[/]")
+    for path in combined or ():
+        console.print(f"Combined: [bold cyan]{path}[/]")
 
 
 def run_live(tui: Tui, worker_done: Callable[[], bool], interval: float = 0.03) -> None:
