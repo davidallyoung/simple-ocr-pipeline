@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal
@@ -35,6 +35,15 @@ class Paragraph:
     kind: str = "paragraph"
 
 
+@dataclass(frozen=True)
+class ImageUsage:
+    """Token counts and cost that the model provider reported for one call."""
+
+    prompt_tokens: int | None
+    completion_tokens: int | None
+    cost_usd: float | None
+
+
 @dataclass
 class Image:
     """An image found on a page (embedded in a PDF or the whole standalone file).
@@ -42,6 +51,8 @@ class Image:
     ``sha256`` identifies the image bytes so repeated occurrences can share one
     description. ``description`` is set when ``status`` is ``described``;
     ``skip_reason`` when it is ``skipped``; ``error`` when it is ``error``.
+    The call fields (``model`` through ``usage``) are set only for images
+    described by a model call.
     """
 
     box: Quad
@@ -53,6 +64,10 @@ class Image:
     skip_reason: Literal["cap", "too_small"] | None = None
     error: str | None = None
     model: str | None = None
+    prompt_version: str | None = None
+    described_at: str | None = None
+    latency_seconds: float | None = None
+    usage: ImageUsage | None = None
 
 
 @dataclass
@@ -130,6 +145,10 @@ def build_document(
                     "skip_reason": image.skip_reason,
                     "error": image.error,
                     "model": image.model,
+                    "prompt_version": image.prompt_version,
+                    "described_at": image.described_at,
+                    "latency_seconds": image.latency_seconds,
+                    "usage": None if image.usage is None else asdict(image.usage),
                 }
                 for image in page.images
             ]
