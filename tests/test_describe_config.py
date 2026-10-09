@@ -117,4 +117,5 @@ def test_plan_batch_reuses_doc_only_for_matching_describe(tmp_path: Path) -> Non
         languages=["en"],
         describe=output.DescribeSettings(model=MODEL, max_images_per_doc=1),
     )
-    assert [f.name for _, f, _ in changed.queued] == ["a.png"]
+    assert changed.queued == []
+    assert [f.name for _, f, _, _ in changed.topup] == ["a.png"]

@@ -120,6 +120,42 @@ class Page:
         return sum(line.confidence for line in self.lines) / len(self.lines)
 
 
+def image_dict(image: Image) -> dict:
+    return {
+        "box": image.box.to_list(),
+        "sha256": image.sha256,
+        "width": image.width,
+        "height": image.height,
+        "status": image.status,
+        "description": image.description,
+        "skip_reason": image.skip_reason,
+        "error": image.error,
+        "model": image.model,
+        "prompt_version": image.prompt_version,
+        "described_at": image.described_at,
+        "latency_seconds": image.latency_seconds,
+        "usage": None if image.usage is None else asdict(image.usage),
+    }
+
+
+def attach_images(
+    document: dict, images_by_page: dict[int, list[Image]], describe: DescribeSettings
+) -> dict:
+    """Return ``document`` with its pages' image records replaced and settings recorded.
+
+    Used by the top-up path, which keeps the stored OCR pages as they are.
+    Pages without images in ``images_by_page`` lose any earlier image records.
+    """
+    pages = []
+    for page in document["pages"]:
+        data = {key: value for key, value in page.items() if key != "images"}
+        records = images_by_page.get(page["page"])
+        if records:
+            data["images"] = [image_dict(image) for image in records]
+        pages.append(data)
+    return {**document, "pages": pages, "describe": describe.as_json()}
+
+
 def build_document(
     source: Path,
     pages: list[Page],
@@ -154,24 +190,7 @@ def build_document(
                 for para in page.paragraphs
             ]
         if page.images:
-            data["images"] = [
-                {
-                    "box": image.box.to_list(),
-                    "sha256": image.sha256,
-                    "width": image.width,
-                    "height": image.height,
-                    "status": image.status,
-                    "description": image.description,
-                    "skip_reason": image.skip_reason,
-                    "error": image.error,
-                    "model": image.model,
-                    "prompt_version": image.prompt_version,
-                    "described_at": image.described_at,
-                    "latency_seconds": image.latency_seconds,
-                    "usage": None if image.usage is None else asdict(image.usage),
-                }
-                for image in page.images
-            ]
+            data["images"] = [image_dict(image) for image in page.images]
         if page.width is not None:
             data["width"] = page.width
         if page.height is not None:

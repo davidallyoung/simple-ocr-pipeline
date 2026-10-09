@@ -8,7 +8,7 @@ import os
 import sys
 import threading
 from collections.abc import Iterator, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image
@@ -18,6 +18,7 @@ from rich.prompt import Prompt
 from app import (
     annotate,
     export,
+    images,
     ingest,
     lite,
     lite_server,
@@ -27,6 +28,7 @@ from app import (
     tui,
     viewer,
 )
+from app import describe as image_describe
 from app.engine import OcrEngine, cuda_available
 
 DEFAULT_OUTPUT = Path("output")
@@ -199,11 +201,14 @@ class BatchPlan:
 
     ``queued`` holds ``(index, file, page_count)`` for files that will be
     processed; ``skipped`` holds ``(index, file, out_path, doc)`` for files
-    whose complete, config-compatible output already exists.
+    whose complete, config-compatible output already exists; ``topup`` holds
+    the same tuple for files whose OCR output is reusable but whose image
+    descriptions are missing or out of date, so only images are described.
     """
 
     queued: list[tuple[int, Path, int]]
     skipped: list[tuple[int, Path, Path, dict]]
+    topup: list[tuple[int, Path, Path, dict]] = field(default_factory=list)
 
 
 def describe_settings(
@@ -250,6 +255,7 @@ def plan_batch(
     """
     queued: list[tuple[int, Path, int]] = []
     skipped: list[tuple[int, Path, Path, dict]] = []
+    topup: list[tuple[int, Path, Path, dict]] = []
     for index, file in enumerate(files):
         out_path = output.output_path_for(file, anchor, output_dir)
         if not force:
@@ -264,8 +270,19 @@ def plan_batch(
             if doc is not None:
                 skipped.append((index, file, out_path, doc))
                 continue
+            if describe is not None:
+                base = output.existing_document(
+                    out_path,
+                    file,
+                    dpi=dpi,
+                    languages=languages,
+                    require_easyocr=require_easyocr,
+                )
+                if base is not None:
+                    topup.append((index, file, out_path, base))
+                    continue
         queued.append((index, file, count_pages(file, dpi)))
-    return BatchPlan(queued=queued, skipped=skipped)
+    return BatchPlan(queued=queued, skipped=skipped, topup=topup)
 
 
 def _ensure_annotations(
@@ -291,6 +308,50 @@ def _ensure_annotations(
         console.print(f"[yellow]Annotation failed for {out_path.name}: {exc!r}[/]")
 
 
+def _make_describer(
+    describe: output.DescribeSettings | None,
+) -> image_describe.OpenRouterDescriber | None:
+    if describe is None:
+        return None
+    return image_describe.OpenRouterDescriber(
+        os.environ[OPENROUTER_KEY_ENV], model=describe.model
+    )
+
+
+def _describe_file_images(
+    file: Path,
+    describer: image_describe.ImageDescriber,
+    describe: output.DescribeSettings,
+    args: argparse.Namespace,
+    cache: Mapping[str, str],
+) -> dict[int, list[output.Image]]:
+    """Extract and describe one file's images, grouped by page number."""
+    if file.suffix.lower() == ".pdf":
+        occurrences = list(images.iter_pdf_images(file))
+    else:
+        occurrences = [images.read_image_file(file)]
+    selections = images.select(
+        occurrences, min_px=args.min_image_px, cap=describe.max_images_per_doc
+    )
+    records = image_describe.describe_images(
+        selections,
+        describer,
+        model=describe.model,
+        prompt_version=describe.prompt_version,
+        cache=cache,
+    )
+    by_page: dict[int, list[output.Image]] = {}
+    for selection, record in zip(selections, records, strict=True):
+        by_page.setdefault(selection.occurrence.page, []).append(record)
+    return by_page
+
+
+def _described_count(by_page: Mapping[int, list[output.Image]]) -> int:
+    return sum(
+        1 for records in by_page.values() for record in records if record.status == "described"
+    )
+
+
 def run_batch(
     files: list[Path],
     anchor: Path,
@@ -301,6 +362,7 @@ def run_batch(
 ) -> None:
     formats = list(args.formats)
     describe = describe_settings(args, console)
+    describer = _make_describer(describe)
     plan = plan_batch(
         files,
         anchor,
@@ -311,7 +373,9 @@ def run_batch(
         require_easyocr=args.ocr_only,
         describe=describe,
     )
-    pages_total = sum(pages for _, _, pages in plan.queued)
+    pages_total = sum(pages for _, _, pages in plan.queued) + sum(
+        output.document_stats(base)[0] for _, _, _, base in plan.topup
+    )
     t = tui.Tui()
     t.begin([f.name for f in files], pages_total)
     combine_entries: list[tuple[str, list[output.Page]]] = []
@@ -360,6 +424,11 @@ def run_batch(
                         )
                 for page in doc_pages:
                     t.page_done(index, page.text_char_count, page.mean_confidence)
+                if describe is not None and describer is not None:
+                    by_page = _describe_file_images(file, describer, describe, args, {})
+                    t.add_images(_described_count(by_page))
+                    for page in doc_pages:
+                        page.images = by_page.get(page.number)
                 engine_name = "liteparse" if used_liteparse else "easyocr"
                 doc = output.build_document(
                     file,
@@ -394,6 +463,29 @@ def run_batch(
                         console.print(f"[yellow]Annotation failed for {file.name}: {exc!r}[/]")
             except Exception as exc:  # per-file isolation; keep batch going
                 t.fail_file(index, repr(exc))
+        if describe is not None and describer is not None:
+            for index, file, out_path, base in plan.topup:
+                try:
+                    t.start_file(index, pages_total=output.document_stats(base)[0])
+                    for page in base["pages"]:
+                        t.page_done(
+                            index,
+                            page.get("text_char_count", 0),
+                            page.get("mean_confidence", 1.0),
+                        )
+                    cache = image_describe.cached_descriptions(
+                        base,
+                        model=describe.model,
+                        prompt_version=describe.prompt_version,
+                    )
+                    by_page = _describe_file_images(file, describer, describe, args, cache)
+                    t.add_images(_described_count(by_page))
+                    output.write_document(
+                        output.attach_images(base, by_page, describe), out_path
+                    )
+                    t.finish_file(index)
+                except Exception as exc:  # per-file isolation; keep batch going
+                    t.fail_file(index, repr(exc))
 
     worker_thread = threading.Thread(target=worker, daemon=True)
     worker_thread.start()
@@ -502,6 +594,8 @@ def handle_batch_input(
                     f"  [yellow]{file}[/]  (already processed, "
                     f"{pages} {'page' if pages == 1 else 'pages'})"
                 )
+        for _index, file, _out_path, _doc in plan.topup:
+            console.print(f"  [cyan]{file}[/]  (add image descriptions only)")
         if skipped:
             console.print(
                 f"Total: {total_pages} pages to process "
