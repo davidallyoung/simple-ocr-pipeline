@@ -166,6 +166,19 @@ def test_changed_model_redescribes_without_ocr(
     assert stored["describe"]["model"] == "other/model"
 
 
+def test_descriptions_are_listed_in_the_summary(
+    tmp_path: Path, describer: FakeDescriber, run: list
+) -> None:
+    src = _png(tmp_path)
+    console = Console(record=True)
+
+    main.run_batch(
+        [src], tmp_path, tmp_path / "out", cast(OcrEngine, FakeEngine()), _args(), console
+    )
+
+    assert "a.png page 1\n    a red square" in console.export_text()
+
+
 def test_missing_key_is_reported_after_the_summary(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: list
 ) -> None:

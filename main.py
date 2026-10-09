@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import sys
 import threading
@@ -13,6 +14,7 @@ from pathlib import Path
 
 from PIL import Image
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Prompt
 
 from app import (
@@ -346,6 +348,29 @@ def _describe_file_images(
     return by_page
 
 
+def _print_descriptions(
+    console: Console, files: list[Path], anchor: Path, output_dir: Path
+) -> None:
+    """List every described image from the stored JSON, so results can be spot-checked."""
+    found: list[tuple[str, object, str]] = []
+    for file in files:
+        out_path = output.output_path_for(file, anchor, output_dir)
+        try:
+            doc = json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for page in doc.get("pages", []):
+            for image in page.get("images", []):
+                if image.get("status") == "described":
+                    found.append((file.name, page.get("page"), image.get("description", "")))
+    if not found:
+        return
+    console.print("[bold]Image descriptions[/]")
+    for name, page_number, text in found:
+        console.print(f"  [cyan]{escape(name)}[/] page {page_number}")
+        console.print(f"    {escape(text)}")
+
+
 def _described_count(by_page: Mapping[int, list[output.Image]]) -> int:
     return sum(
         1 for records in by_page.values() for record in records if record.status == "described"
@@ -520,6 +545,8 @@ def run_batch(
         formats=formats,
         combined=combined,
     )
+    if "json" in formats:
+        _print_descriptions(console, files, anchor, output_dir)
     if args.describe_images and describe is None:
         console.print(
             f"[yellow]Image descriptions skipped: {OPENROUTER_KEY_ENV} is not set.[/]"
