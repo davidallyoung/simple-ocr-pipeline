@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import argparse
 import io
+import os
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -29,6 +30,8 @@ from app import (
 from app.engine import OcrEngine, cuda_available
 
 DEFAULT_OUTPUT = Path("output")
+DEFAULT_DESCRIBE_MODEL = "anthropic/claude-haiku-5.5"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 
 
 def _formats_arg(value: str) -> list[str]:
@@ -36,6 +39,16 @@ def _formats_arg(value: str) -> list[str]:
         return export.parse_formats(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or more, got {parsed}")
+    return parsed
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -112,6 +125,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Apply one view to every target: preview, json, images, inspector "
         "(default: interactive picker)",
     )
+    parser.add_argument(
+        "--describe-images",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=f"Describe images with OpenRouter ({OPENROUTER_KEY_ENV} must be set; "
+        "default: on when it is set)",
+    )
+    parser.add_argument(
+        "--describe-model",
+        default=DEFAULT_DESCRIBE_MODEL,
+        help=f"OpenRouter model for image descriptions (default: {DEFAULT_DESCRIBE_MODEL})",
+    )
+    parser.add_argument(
+        "--max-images-per-doc",
+        type=_nonnegative_int,
+        default=5,
+        help="Described images per document; extra images are recorded as skipped "
+        "(default: 5)",
+    )
+    parser.add_argument(
+        "--min-image-px",
+        type=_nonnegative_int,
+        default=32,
+        help="Skip images whose shorter side is below this many pixels (default: 32)",
+    )
     args = parser.parse_args(argv)
     if args.view is not None:
         if args.path:
@@ -168,6 +206,32 @@ class BatchPlan:
     skipped: list[tuple[int, Path, Path, dict]]
 
 
+def describe_settings(
+    args: argparse.Namespace,
+    console: Console,
+    env: Mapping[str, str] = os.environ,
+) -> output.DescribeSettings | None:
+    """Resolve image-description settings, or ``None`` when descriptions are off.
+
+    Descriptions default to on only when the OpenRouter key is set. An
+    explicit ``--describe-images`` without the key warns and continues without
+    descriptions instead of failing the run.
+    """
+    has_key = bool(env.get(OPENROUTER_KEY_ENV))
+    enabled = has_key if args.describe_images is None else args.describe_images
+    if not enabled:
+        return None
+    if not has_key:
+        console.print(
+            f"[yellow]{OPENROUTER_KEY_ENV} is not set; image descriptions skipped.[/]"
+        )
+        return None
+    return output.DescribeSettings(
+        model=args.describe_model,
+        max_images_per_doc=args.max_images_per_doc,
+    )
+
+
 def plan_batch(
     files: list[Path],
     anchor: Path,
@@ -177,6 +241,7 @@ def plan_batch(
     languages: list[str],
     force: bool = False,
     require_easyocr: bool = False,
+    describe: output.DescribeSettings | None = None,
 ) -> BatchPlan:
     """Pre-pass deciding which files to process and which to reuse.
 
@@ -194,6 +259,7 @@ def plan_batch(
                 dpi=dpi,
                 languages=languages,
                 require_easyocr=require_easyocr,
+                describe=describe,
             )
             if doc is not None:
                 skipped.append((index, file, out_path, doc))
@@ -234,6 +300,7 @@ def run_batch(
     console: Console,
 ) -> None:
     formats = list(args.formats)
+    describe = describe_settings(args, console)
     plan = plan_batch(
         files,
         anchor,
@@ -242,6 +309,7 @@ def run_batch(
         languages=engine.languages,
         force=args.force,
         require_easyocr=args.ocr_only,
+        describe=describe,
     )
     pages_total = sum(pages for _, _, pages in plan.queued)
     t = tui.Tui()
@@ -299,6 +367,7 @@ def run_batch(
                     engine_name=engine_name,
                     languages=engine.languages,
                     dpi=args.dpi,
+                    describe=describe,
                 )
                 out_path = output.output_path_for(file, anchor, output_dir)
                 if "json" in formats:
@@ -409,6 +478,7 @@ def handle_batch_input(
             languages=engine.languages,
             force=args.force,
             require_easyocr=args.ocr_only,
+            describe=describe_settings(args, console),
         )
         console.print(f"{len(files)} file(s):")
         total_pages = 0

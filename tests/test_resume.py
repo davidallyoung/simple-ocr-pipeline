@@ -38,6 +38,10 @@ def _args(**overrides: object) -> argparse.Namespace:
         "formats": ["json", "txt"],
         "combine": False,
         "output": Path("output"),
+        "describe_images": False,
+        "describe_model": main.DEFAULT_DESCRIBE_MODEL,
+        "max_images_per_doc": 5,
+        "min_image_px": 32,
     }
     base.update(overrides)
     return argparse.Namespace(**base)

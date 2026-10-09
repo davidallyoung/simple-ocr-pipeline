@@ -34,6 +34,25 @@ class Paragraph:
     kind: str = "paragraph"
 
 
+DESCRIBE_PROMPT_VERSION = "1"
+
+
+@dataclass(frozen=True)
+class DescribeSettings:
+    """Image-description settings that a stored document must match to be reused."""
+
+    model: str
+    max_images_per_doc: int
+    prompt_version: str = DESCRIBE_PROMPT_VERSION
+
+    def as_json(self) -> dict[str, str | int]:
+        return {
+            "model": self.model,
+            "max_images_per_doc": self.max_images_per_doc,
+            "prompt_version": self.prompt_version,
+        }
+
+
 @dataclass
 class Page:
     number: int
@@ -70,6 +89,7 @@ def build_document(
     engine_name: str,
     languages: list[str],
     dpi: int | None = None,
+    describe: DescribeSettings | None = None,
 ) -> dict:
     def page_dict(page: Page) -> dict:
         data = {
@@ -102,7 +122,7 @@ def build_document(
             data["height"] = page.height
         return data
 
-    return {
+    document = {
         "source": str(source.resolve()),
         "engine": engine_name,
         "language": languages,
@@ -112,6 +132,9 @@ def build_document(
         "dpi": dpi,
         "pages": [page_dict(page) for page in pages],
     }
+    if describe is not None:
+        document["describe"] = describe.as_json()
+    return document
 
 
 def relative_source_path(source: Path, anchor: Path) -> Path:
@@ -177,14 +200,16 @@ def existing_document(
     dpi: int,
     languages: list[str],
     require_easyocr: bool = False,
+    describe: DescribeSettings | None = None,
 ) -> dict | None:
     """Return a prior output document if it is complete and config-compatible.
 
-    Reuse is keyed on the output JSON plus the source path, ``dpi`` and
-    language list, so re-running a folder can skip work that is already done
-    without silently mixing results from a different configuration. Returns
-    ``None`` when ``path`` is missing/empty, not valid JSON, structurally
-    incomplete, or was produced with a different configuration.
+    Reuse is keyed on the output JSON plus the source path, ``dpi``, language
+    list and, when descriptions are requested, the describe settings, so
+    re-running a folder can skip work that is already done without silently
+    mixing results from a different configuration. Returns ``None`` when
+    ``path`` is missing/empty, not valid JSON, structurally incomplete, or was
+    produced with a different configuration.
     """
     try:
         if not path.exists() or not path.is_file() or path.stat().st_size <= 0:
@@ -211,6 +236,8 @@ def existing_document(
     if stored_languages is not None and stored_languages != languages:
         return None
     if require_easyocr and loaded.get("engine") != "easyocr":
+        return None
+    if describe is not None and loaded.get("describe") != describe.as_json():
         return None
     return loaded
 
