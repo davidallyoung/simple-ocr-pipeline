@@ -142,6 +142,8 @@ bd prime                # Refresh Beads context
 
 Load the listed global skills (`~/.config/opencode/skills/<name>/SKILL.md`) when the matching activity happens. Skills marked **always** apply to every instance of the activity; the rest apply when their trigger fits.
 
+**Load skills with the `skill` tool before acting.** Before starting any task, match it against the table below and call the `skill` tool for every matching row (use the skill ID, e.g. `principle-fix-root-causes`). Rows marked **always** apply to every instance of that activity. Do not skip a matching skill because the task looks small. Before reporting work as done, confirm each loaded skill's checklist was followed, and say which skills you used in the final report.
+
 | Activity in this repo | Skills |
 |---|---|
 | Any written output: docs, README, PR descriptions, commit messages, reports to the user | **always** `unslop`; `technical-writing` for docs, README, PRs, commits |
