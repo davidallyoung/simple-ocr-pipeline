@@ -90,6 +90,10 @@ def test_output_images_serialize_additively(tmp_path: Path) -> None:
         status="described",
         description="A bar chart.",
         model="anthropic/claude-haiku-5.5",
+        prompt_version="1",
+        described_at="2026-10-09T12:00:00+00:00",
+        latency_seconds=1.5,
+        usage=output.ImageUsage(prompt_tokens=187, completion_tokens=30, cost_usd=3.37e-05),
     )
     skipped = output.Image(
         box=Quad.from_xywh(400, 100, 20, 20),
@@ -116,8 +120,13 @@ def test_output_images_serialize_additively(tmp_path: Path) -> None:
         "skip_reason": None,
         "error": None,
         "model": "anthropic/claude-haiku-5.5",
+        "prompt_version": "1",
+        "described_at": "2026-10-09T12:00:00+00:00",
+        "latency_seconds": 1.5,
+        "usage": {"prompt_tokens": 187, "completion_tokens": 30, "cost_usd": 3.37e-05},
     }
     assert first[1]["status"] == "skipped"
+    assert first[1]["usage"] is None
     assert first[1]["skip_reason"] == "too_small"
     assert "images" not in doc["pages"][1]
 

@@ -1,12 +1,22 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import pytest
 
 from app import describe
+from app.output import ImageUsage
 
 KEY = "sk-or-test-SECRET"
+
+SPIKE_USAGE = {
+    "prompt_tokens": 187,
+    "completion_tokens": 30,
+    "total_tokens": 217,
+    "cost": 3.37e-05,
+    "is_byok": False,
+}
 
 
 class ScriptedTransport:
@@ -26,28 +36,36 @@ class ScriptedTransport:
         return outcome
 
 
-def _ok(text: str) -> tuple[int, bytes]:
-    body = {"choices": [{"message": {"role": "assistant", "content": text}}]}
+def _ok(text: str, usage: dict | None = None) -> tuple[int, bytes]:
+    body: dict = {"choices": [{"message": {"role": "assistant", "content": text}}]}
+    if usage is not None:
+        body["usage"] = usage
     return 200, json.dumps(body).encode()
 
 
 def _describer(
-    transport: ScriptedTransport, sleeps: list[float], *, max_retries: int = 2
+    transport: ScriptedTransport,
+    sleeps: list[float],
+    *,
+    max_retries: int = 2,
+    clock: list[float] | None = None,
 ) -> describe.OpenRouterDescriber:
+    ticks = iter(clock if clock is not None else [0.0, 0.0])
     return describe.OpenRouterDescriber(
         KEY,
         model="anthropic/claude-haiku-5.5",
         max_retries=max_retries,
         transport=transport,
         sleep=sleeps.append,
+        clock=lambda: next(ticks),
     )
 
 
 def test_sends_model_prompt_and_image_as_data_uri() -> None:
     transport = ScriptedTransport([_ok("  A bar chart.  ")])
-    text = _describer(transport, []).describe(b"abc", "image/png")
+    result = _describer(transport, []).describe(b"abc", "image/png")
 
-    assert text == "A bar chart."
+    assert result.text == "A bar chart."
     url, headers, body = transport.requests[0]
     assert url == describe.API_URL
     assert headers["Authorization"] == f"Bearer {KEY}"
@@ -60,11 +78,41 @@ def test_sends_model_prompt_and_image_as_data_uri() -> None:
     }
 
 
+def test_returns_usage_from_response() -> None:
+    transport = ScriptedTransport([_ok("A chart.", SPIKE_USAGE)])
+    result = _describer(transport, []).describe(b"abc", "image/png")
+
+    assert result.usage == ImageUsage(prompt_tokens=187, completion_tokens=30, cost_usd=3.37e-05)
+
+
+def test_usage_is_none_when_response_has_no_usage_block() -> None:
+    transport = ScriptedTransport([_ok("A chart.")])
+    result = _describer(transport, []).describe(b"abc", "image/png")
+
+    assert result.usage is None
+
+
+def test_latency_covers_the_whole_call() -> None:
+    transport = ScriptedTransport([_ok("A chart.")])
+    result = _describer(transport, [], clock=[10.0, 10.25]).describe(b"abc", "image/png")
+
+    assert result.latency_seconds == 0.25
+
+
+def test_described_at_is_an_iso_timestamp() -> None:
+    transport = ScriptedTransport([_ok("A chart.")])
+    result = _describer(transport, []).describe(b"abc", "image/png")
+
+    assert datetime.fromisoformat(result.described_at).tzinfo is not None
+
+
 def test_retries_rate_limit_then_returns_description() -> None:
     transport = ScriptedTransport([(429, b"slow down"), _ok("Recovered.")])
     sleeps: list[float] = []
 
-    assert _describer(transport, sleeps).describe(b"abc", "image/png") == "Recovered."
+    result = _describer(transport, sleeps).describe(b"abc", "image/png")
+
+    assert result.text == "Recovered."
     assert len(transport.requests) == 2
     assert sleeps == [describe.BACKOFF_SECONDS]
 
@@ -72,7 +120,7 @@ def test_retries_rate_limit_then_returns_description() -> None:
 def test_retries_network_error_then_returns_description() -> None:
     transport = ScriptedTransport([TimeoutError("slow"), _ok("Back online.")])
 
-    assert _describer(transport, []).describe(b"abc", "image/png") == "Back online."
+    assert _describer(transport, []).describe(b"abc", "image/png").text == "Back online."
 
 
 def test_gives_up_after_retry_budget_on_server_error() -> None:
@@ -105,6 +153,7 @@ def test_error_message_never_contains_the_key() -> None:
     ("raw", "message"),
     [
         (b"<html>", "not JSON"),
+        (b"[]", "not a JSON object"),
         (b'{"choices": []}', "no message content"),
         (_ok("   ")[1], "empty"),
     ],
