@@ -6,7 +6,7 @@ from pathlib import Path
 from PIL import Image
 from rich.console import Console
 
-from app import ingest, output, pdfs, viewer
+from app import annotate, ingest, output, pdfs, viewer
 from app.geometry import Quad
 
 
@@ -78,6 +78,56 @@ def test_output_document_shape(tmp_path: Path) -> None:
     assert data["pages"][0]["text"] == "hello"
     assert data["pages"][0]["lines"][0]["confidence"] == 0.9
     assert data["pages"][0]["paragraphs"][0]["kind"] == "paragraph"
+
+
+def test_output_images_serialize_additively(tmp_path: Path) -> None:
+    src = tmp_path / "report.pdf"
+    described = output.Image(
+        box=Quad.from_xywh(72, 100, 300, 225),
+        sha256="abc123",
+        width=400,
+        height=300,
+        status="described",
+        description="A bar chart.",
+        model="anthropic/claude-haiku-5.5",
+    )
+    skipped = output.Image(
+        box=Quad.from_xywh(400, 100, 20, 20),
+        sha256="def456",
+        width=8,
+        height=8,
+        status="skipped",
+        skip_reason="too_small",
+    )
+    pages = [
+        output.Page(number=1, lines=[], images=[described, skipped]),
+        output.Page(number=2, lines=[]),
+    ]
+    doc = output.build_document(src, pages, "easyocr", ["en"], dpi=200)
+
+    first = doc["pages"][0]["images"]
+    assert first[0] == {
+        "box": described.box.to_list(),
+        "sha256": "abc123",
+        "width": 400,
+        "height": 300,
+        "status": "described",
+        "description": "A bar chart.",
+        "skip_reason": None,
+        "error": None,
+        "model": "anthropic/claude-haiku-5.5",
+    }
+    assert first[1]["status"] == "skipped"
+    assert first[1]["skip_reason"] == "too_small"
+    assert "images" not in doc["pages"][1]
+
+    out_path = tmp_path / "out" / "report.pdf.json"
+    output.write_document(doc, out_path)
+    reloaded = json.loads(out_path.read_text(encoding="utf-8"))
+    assert reloaded["pages"][0]["images"] == first
+    assert output.existing_document(out_path, src, dpi=200, languages=["en"]) is not None
+
+    assert annotate.pages_from_document(reloaded)[0].lines == []
 
 
 def _sample_doc(src: Path, *, dpi: int = 200, engine: str = "easyocr") -> dict:

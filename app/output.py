@@ -8,6 +8,7 @@ import tempfile
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from app.geometry import Quad
 
@@ -35,12 +36,33 @@ class Paragraph:
 
 
 @dataclass
+class Image:
+    """An image found on a page (embedded in a PDF or the whole standalone file).
+
+    ``sha256`` identifies the image bytes so repeated occurrences can share one
+    description. ``description`` is set when ``status`` is ``described``;
+    ``skip_reason`` when it is ``skipped``; ``error`` when it is ``error``.
+    """
+
+    box: Quad
+    sha256: str
+    width: int
+    height: int
+    status: Literal["described", "skipped", "error"]
+    description: str | None = None
+    skip_reason: Literal["cap", "too_small"] | None = None
+    error: str | None = None
+    model: str | None = None
+
+
+@dataclass
 class Page:
     number: int
     lines: list[Line]
     width: float | None = None
     height: float | None = None
     paragraphs: list[Paragraph] | None = None
+    images: list[Image] | None = None
 
     @property
     def regions(self) -> list[Line | Paragraph]:
@@ -95,6 +117,21 @@ def build_document(
                     "kind": para.kind,
                 }
                 for para in page.paragraphs
+            ]
+        if page.images:
+            data["images"] = [
+                {
+                    "box": image.box.to_list(),
+                    "sha256": image.sha256,
+                    "width": image.width,
+                    "height": image.height,
+                    "status": image.status,
+                    "description": image.description,
+                    "skip_reason": image.skip_reason,
+                    "error": image.error,
+                    "model": image.model,
+                }
+                for image in page.images
             ]
         if page.width is not None:
             data["width"] = page.width
