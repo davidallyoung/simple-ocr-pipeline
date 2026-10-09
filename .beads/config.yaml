@@ -74,4 +74,4 @@
 sync:
     remote: "git+https://github.com/davidallyoung/simple-ocr-pipeline.git"
 export:
-    auto: true
+    auto: false
