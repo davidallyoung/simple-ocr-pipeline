@@ -129,6 +129,15 @@ bd prime                # Refresh Beads context
 - Do not force-push, rewrite published history, or merge PRs without explicit user instruction.
 - If a push or PR creation is blocked, stop and report the exact command and error.
 
+## Parallel Work (repo policy)
+
+- Work on independent beads in separate git worktrees, one branch per worktree. Git refuses to check out the same branch in two worktrees.
+- Claim the bead before starting (`bd update <id> --claim`) so two agents don't take the same work.
+- Create worktrees next to the repo, from `origin/master`: `git worktree add ../simple-ocr-pipeline.worktrees/<name> -b <branch> origin/master`.
+- Run `uv sync` in each new worktree. `.venv` is not shared.
+- Check `git worktree list` before creating one. Do not reuse a branch that is checked out elsewhere.
+- After the PR merges, remove the worktree with `git worktree remove <path>` and delete the branch with `git branch -d <branch>`.
+
 ## Skill Activity Map (repo policy)
 
 Load the listed global skills (`~/.config/opencode/skills/<name>/SKILL.md`) when the matching activity happens. Skills marked **always** apply to every instance of the activity; the rest apply when their trigger fits.
