@@ -81,6 +81,20 @@ def test_plan_batch_partitions_completed_and_pending(tmp_path: Path) -> None:
     assert plan.skipped[0][3]["page_count"] == 1
 
 
+def test_run_batch_shows_inspect_picker_once(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
+    a = _png(tmp_path, "a.png")
+    _silence(monkeypatch)
+    pickers: list = []
+    monkeypatch.setattr(
+        main.viewer, "choose_file", lambda console, entries: pickers.append(entries)
+    )
+    main.run_batch(
+        [a], tmp_path, tmp_path / "out", cast(OcrEngine, FakeEngine()), _args(), Console()
+    )
+
+    assert len(pickers) == 1
+
+
 def test_run_batch_reuses_existing_doc(tmp_path: Path, monkeypatch) -> None:  # noqa: ANN001
     a = _png(tmp_path, "a.png")
     b = _png(tmp_path, "b.png")
