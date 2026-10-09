@@ -128,3 +128,36 @@ bd prime                # Refresh Beads context
 - Bug fixes and docs-only changes may follow the same branch-and-PR flow; use judgment, and state which path you took.
 - Do not force-push, rewrite published history, or merge PRs without explicit user instruction.
 - If a push or PR creation is blocked, stop and report the exact command and error.
+
+## Skill Activity Map (repo policy)
+
+Load the listed global skills (`~/.config/opencode/skills/<name>/SKILL.md`) when the matching activity happens. Skills marked **always** apply to every instance of the activity; the rest apply when their trigger fits.
+
+| Activity in this repo | Skills |
+|---|---|
+| Any written output: docs, README, PR descriptions, commit messages, reports to the user | **always** `unslop`; `technical-writing` for docs, README, PRs, commits |
+| Explaining code or a subsystem, onboarding | `how` (mechanics), `why` (rationale), `teach` (plain explanation) |
+| Plain-language summaries for the user | `bro` |
+| Designing a new feature or module before coding | `architect`, `principle-foundational-thinking`, `principle-redesign-from-first-principles` |
+| Competing designs or UI/TUI choices with no precedent | `principle-exhaust-the-design-space`, `arena`, `principle-experience-first` |
+| Scope and product tradeoffs in the TUI or CLI | `principle-experience-first` |
+| Bug fixes and debugging | `principle-fix-root-causes`; `principle-attack-the-premise` after two failed fixes sharing one premise; `tdd` only when a cheap local test exists or the user asks |
+| Writing or changing tests | `principle-test-behavior-not-implementation` |
+| Typed Python: signatures, new modules, mypy failures | `principle-type-system-discipline`, `principle-boundary-discipline` |
+| Validating external input (CLI args, env vars, OpenRouter responses) | `principle-boundary-discipline` |
+| Reuse, resume, cache, or re-run logic (`plan_batch`, `existing_document`, describe cache) | `principle-make-operations-idempotent` |
+| Shared state between the worker thread and the TUI (`app/tui.py`) | `principle-separate-before-serializing-shared-state` |
+| Refactors, diff review, deleting code | `principle-laziness-protocol`, `principle-subtract-before-you-add`, `principle-minimize-reader-load` |
+| Replacing an internal API or output schema | `principle-migrate-callers-then-delete-legacy-apis`, `principle-outcome-oriented-execution` |
+| Multi-step work and stacking PRs | `principle-sequence-verifiable-units`, `principle-build-the-lever` |
+| Long or unattended multi-phase runs | `show-me-your-work`, `figure-it-out` |
+| Parallel research or sweeps | `swarm`, `principle-guard-the-context-window` |
+| Reviewing a change before it ships | `blast-radius`, `interrogate` (for high-risk changes) |
+| Before declaring any task done | **always** `principle-prove-it-works`; `create-verification-skill` if the repo lacks a scripted way to prove the feature |
+| Keeping a verification skill current | `maintain-verification-skill` |
+| Reporting a perf number or speedup | `principle-explain-the-number`, `benchmark-checklist` |
+| A repeated mistake or correction | `correct`, `principle-encode-lessons-in-structure` (turn it into a ruff rule or test) |
+| Tradeoffs on reversible work | `principle-never-block-on-the-human` |
+| Code comments | `no-comments` (match the existing density, per the comment guidance above) |
+
+Not applicable to this repo: `typescript-best-practices`. `report` is for OpenCode bugs only, not this project.
