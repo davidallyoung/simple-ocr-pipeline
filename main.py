@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
+import os
 import sys
 import threading
-from collections.abc import Iterator
-from dataclasses import dataclass
+from collections.abc import Iterator, Mapping
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from PIL import Image
 from rich.console import Console
+from rich.markup import escape
 from rich.prompt import Prompt
 
 from app import (
     annotate,
     export,
+    images,
     ingest,
     lite,
     lite_server,
@@ -26,9 +30,12 @@ from app import (
     tui,
     viewer,
 )
+from app import describe as image_describe
 from app.engine import OcrEngine, cuda_available
 
 DEFAULT_OUTPUT = Path("output")
+DEFAULT_DESCRIBE_MODEL = "anthropic/claude-haiku-5.5"
+OPENROUTER_KEY_ENV = "OPENROUTER_API_KEY"
 
 
 def _formats_arg(value: str) -> list[str]:
@@ -36,6 +43,16 @@ def _formats_arg(value: str) -> list[str]:
         return export.parse_formats(value)
     except ValueError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from exc
+
+
+def _nonnegative_int(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"expected an integer, got {value!r}") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError(f"must be 0 or more, got {parsed}")
+    return parsed
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -112,6 +129,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Apply one view to every target: preview, json, images, inspector "
         "(default: interactive picker)",
     )
+    parser.add_argument(
+        "--describe-images",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=f"Describe images with OpenRouter ({OPENROUTER_KEY_ENV} must be set; "
+        "default: on when it is set)",
+    )
+    parser.add_argument(
+        "--describe-model",
+        default=DEFAULT_DESCRIBE_MODEL,
+        help=f"OpenRouter model for image descriptions (default: {DEFAULT_DESCRIBE_MODEL})",
+    )
+    parser.add_argument(
+        "--max-images-per-doc",
+        type=_nonnegative_int,
+        default=5,
+        help="Described images per document; extra images are recorded as skipped "
+        "(default: 5)",
+    )
+    parser.add_argument(
+        "--min-image-px",
+        type=_nonnegative_int,
+        default=32,
+        help="Skip images whose shorter side is below this many pixels (default: 32)",
+    )
     args = parser.parse_args(argv)
     if args.view is not None:
         if args.path:
@@ -161,11 +203,40 @@ class BatchPlan:
 
     ``queued`` holds ``(index, file, page_count)`` for files that will be
     processed; ``skipped`` holds ``(index, file, out_path, doc)`` for files
-    whose complete, config-compatible output already exists.
+    whose complete, config-compatible output already exists; ``topup`` holds
+    the same tuple for files whose OCR output is reusable but whose image
+    descriptions are missing or out of date, so only images are described.
     """
 
     queued: list[tuple[int, Path, int]]
     skipped: list[tuple[int, Path, Path, dict]]
+    topup: list[tuple[int, Path, Path, dict]] = field(default_factory=list)
+
+
+def describe_settings(
+    args: argparse.Namespace,
+    console: Console,
+    env: Mapping[str, str] = os.environ,
+) -> output.DescribeSettings | None:
+    """Resolve image-description settings, or ``None`` when descriptions are off.
+
+    Descriptions default to on only when the OpenRouter key is set. An
+    explicit ``--describe-images`` without the key warns and continues without
+    descriptions instead of failing the run.
+    """
+    has_key = bool(env.get(OPENROUTER_KEY_ENV))
+    enabled = has_key if args.describe_images is None else args.describe_images
+    if not enabled:
+        return None
+    if not has_key:
+        console.print(
+            f"[yellow]{OPENROUTER_KEY_ENV} is not set; image descriptions skipped.[/]"
+        )
+        return None
+    return output.DescribeSettings(
+        model=args.describe_model,
+        max_images_per_doc=args.max_images_per_doc,
+    )
 
 
 def plan_batch(
@@ -177,6 +248,7 @@ def plan_batch(
     languages: list[str],
     force: bool = False,
     require_easyocr: bool = False,
+    describe: output.DescribeSettings | None = None,
 ) -> BatchPlan:
     """Pre-pass deciding which files to process and which to reuse.
 
@@ -185,6 +257,7 @@ def plan_batch(
     """
     queued: list[tuple[int, Path, int]] = []
     skipped: list[tuple[int, Path, Path, dict]] = []
+    topup: list[tuple[int, Path, Path, dict]] = []
     for index, file in enumerate(files):
         out_path = output.output_path_for(file, anchor, output_dir)
         if not force:
@@ -194,12 +267,24 @@ def plan_batch(
                 dpi=dpi,
                 languages=languages,
                 require_easyocr=require_easyocr,
+                describe=describe,
             )
             if doc is not None:
                 skipped.append((index, file, out_path, doc))
                 continue
+            if describe is not None:
+                base = output.existing_document(
+                    out_path,
+                    file,
+                    dpi=dpi,
+                    languages=languages,
+                    require_easyocr=require_easyocr,
+                )
+                if base is not None:
+                    topup.append((index, file, out_path, base))
+                    continue
         queued.append((index, file, count_pages(file, dpi)))
-    return BatchPlan(queued=queued, skipped=skipped)
+    return BatchPlan(queued=queued, skipped=skipped, topup=topup)
 
 
 def _ensure_annotations(
@@ -225,6 +310,73 @@ def _ensure_annotations(
         console.print(f"[yellow]Annotation failed for {out_path.name}: {exc!r}[/]")
 
 
+def _make_describer(
+    describe: output.DescribeSettings | None,
+) -> image_describe.OpenRouterDescriber | None:
+    if describe is None:
+        return None
+    return image_describe.OpenRouterDescriber(
+        os.environ[OPENROUTER_KEY_ENV], model=describe.model
+    )
+
+
+def _describe_file_images(
+    file: Path,
+    describer: image_describe.ImageDescriber,
+    describe: output.DescribeSettings,
+    args: argparse.Namespace,
+    cache: Mapping[str, str],
+) -> dict[int, list[output.Image]]:
+    """Extract and describe one file's images, grouped by page number."""
+    if file.suffix.lower() == ".pdf":
+        occurrences = list(images.iter_pdf_images(file))
+    else:
+        occurrences = [images.read_image_file(file)]
+    selections = images.select(
+        occurrences, min_px=args.min_image_px, cap=describe.max_images_per_doc
+    )
+    records = image_describe.describe_images(
+        selections,
+        describer,
+        model=describe.model,
+        prompt_version=describe.prompt_version,
+        cache=cache,
+    )
+    by_page: dict[int, list[output.Image]] = {}
+    for selection, record in zip(selections, records, strict=True):
+        by_page.setdefault(selection.occurrence.page, []).append(record)
+    return by_page
+
+
+def _print_descriptions(
+    console: Console, files: list[Path], anchor: Path, output_dir: Path
+) -> None:
+    """List every described image from the stored JSON, so results can be spot-checked."""
+    found: list[tuple[str, object, str]] = []
+    for file in files:
+        out_path = output.output_path_for(file, anchor, output_dir)
+        try:
+            doc = json.loads(out_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        for page in doc.get("pages", []):
+            for image in page.get("images", []):
+                if image.get("status") == "described":
+                    found.append((file.name, page.get("page"), image.get("description", "")))
+    if not found:
+        return
+    console.print("[bold]Image descriptions[/]")
+    for name, page_number, text in found:
+        console.print(f"  [cyan]{escape(name)}[/] page {page_number}")
+        console.print(f"    {escape(text)}")
+
+
+def _described_count(by_page: Mapping[int, list[output.Image]]) -> int:
+    return sum(
+        1 for records in by_page.values() for record in records if record.status == "described"
+    )
+
+
 def run_batch(
     files: list[Path],
     anchor: Path,
@@ -234,6 +386,8 @@ def run_batch(
     console: Console,
 ) -> None:
     formats = list(args.formats)
+    describe = describe_settings(args, console)
+    describer = _make_describer(describe)
     plan = plan_batch(
         files,
         anchor,
@@ -242,8 +396,11 @@ def run_batch(
         languages=engine.languages,
         force=args.force,
         require_easyocr=args.ocr_only,
+        describe=describe,
     )
-    pages_total = sum(pages for _, _, pages in plan.queued)
+    pages_total = sum(pages for _, _, pages in plan.queued) + sum(
+        output.document_stats(base)[0] for _, _, _, base in plan.topup
+    )
     t = tui.Tui()
     t.begin([f.name for f in files], pages_total)
     combine_entries: list[tuple[str, list[output.Page]]] = []
@@ -292,6 +449,11 @@ def run_batch(
                         )
                 for page in doc_pages:
                     t.page_done(index, page.text_char_count, page.mean_confidence)
+                if describe is not None and describer is not None:
+                    by_page = _describe_file_images(file, describer, describe, args, {})
+                    t.add_images(_described_count(by_page))
+                    for page in doc_pages:
+                        page.images = by_page.get(page.number)
                 engine_name = "liteparse" if used_liteparse else "easyocr"
                 doc = output.build_document(
                     file,
@@ -299,6 +461,7 @@ def run_batch(
                     engine_name=engine_name,
                     languages=engine.languages,
                     dpi=args.dpi,
+                    describe=describe,
                 )
                 out_path = output.output_path_for(file, anchor, output_dir)
                 if "json" in formats:
@@ -325,6 +488,29 @@ def run_batch(
                         console.print(f"[yellow]Annotation failed for {file.name}: {exc!r}[/]")
             except Exception as exc:  # per-file isolation; keep batch going
                 t.fail_file(index, repr(exc))
+        if describe is not None and describer is not None:
+            for index, file, out_path, base in plan.topup:
+                try:
+                    t.start_file(index, pages_total=output.document_stats(base)[0])
+                    for page in base["pages"]:
+                        t.page_done(
+                            index,
+                            page.get("text_char_count", 0),
+                            page.get("mean_confidence", 1.0),
+                        )
+                    cache = image_describe.cached_descriptions(
+                        base,
+                        model=describe.model,
+                        prompt_version=describe.prompt_version,
+                    )
+                    by_page = _describe_file_images(file, describer, describe, args, cache)
+                    t.add_images(_described_count(by_page))
+                    output.write_document(
+                        output.attach_images(base, by_page, describe), out_path
+                    )
+                    t.finish_file(index)
+                except Exception as exc:  # per-file isolation; keep batch going
+                    t.fail_file(index, repr(exc))
 
     worker_thread = threading.Thread(target=worker, daemon=True)
     worker_thread.start()
@@ -359,6 +545,12 @@ def run_batch(
         formats=formats,
         combined=combined,
     )
+    if "json" in formats:
+        _print_descriptions(console, files, anchor, output_dir)
+    if args.describe_images and describe is None:
+        console.print(
+            f"[yellow]Image descriptions skipped: {OPENROUTER_KEY_ENV} is not set.[/]"
+        )
 
     done_entries = (
         [
@@ -409,6 +601,7 @@ def handle_batch_input(
             languages=engine.languages,
             force=args.force,
             require_easyocr=args.ocr_only,
+            describe=describe_settings(args, console),
         )
         console.print(f"{len(files)} file(s):")
         total_pages = 0
@@ -432,6 +625,8 @@ def handle_batch_input(
                     f"  [yellow]{file}[/]  (already processed, "
                     f"{pages} {'page' if pages == 1 else 'pages'})"
                 )
+        for _index, file, _out_path, _doc in plan.topup:
+            console.print(f"  [cyan]{file}[/]  (add image descriptions only)")
         if skipped:
             console.print(
                 f"Total: {total_pages} pages to process "

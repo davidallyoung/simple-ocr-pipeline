@@ -62,6 +62,7 @@ class Tui:
         self.batch_started_at = 0.0
         self.pages_total = 0
         self.pages_done = 0
+        self.images_done = 0
         self._revision = 0
 
         self.global_progress = Progress(
@@ -91,6 +92,7 @@ class Tui:
             self.jobs = [FileJob(name=name) for name in names]
             self.pages_total = pages_total
             self.pages_done = 0
+            self.images_done = 0
             self.batch_started_at = time.monotonic()
             self._header_id = self.header.add_task("")
             self.global_progress.add_task("Files", total=len(names))
@@ -111,6 +113,11 @@ class Tui:
             job.chars += chars
             job.conf = (job.conf * (job.pages_done - 1) + conf) / job.pages_done
             self.pages_done += 1
+            self._bump()
+
+    def add_images(self, described: int) -> None:
+        with self.lock:
+            self.images_done += described
             self._bump()
 
     def finish_file(self, index: int) -> None:
@@ -209,6 +216,8 @@ class Tui:
             parts.append(f"[yellow]{skipped} skipped[/]")
         if self.pages_total:
             parts.append(f"[cyan]Pages:[/] {self.pages_done}/{self.pages_total}")
+        if self.images_done:
+            parts.append(f"[cyan]Images described:[/] {self.images_done}")
         return Text.from_markup("  ".join(parts))
 
     def render(self) -> Panel:
