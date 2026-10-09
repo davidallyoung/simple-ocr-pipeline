@@ -377,7 +377,6 @@ def run_batch(
         else []
     )
     viewer.choose_file(console, done_entries)
-    viewer.choose_file(console, done_entries)
 
 
 def handle_batch_input(
