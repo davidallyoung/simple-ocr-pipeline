@@ -70,7 +70,7 @@ class Image:
     usage: ImageUsage | None = None
 
 
-DESCRIBE_PROMPT_VERSION = "1"
+DESCRIBE_PROMPT_VERSION = "2"
 
 
 @dataclass(frozen=True)

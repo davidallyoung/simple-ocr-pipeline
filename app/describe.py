@@ -13,14 +13,15 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from app.images import Selection
-from app.output import Image, ImageUsage
+from app.output import DESCRIBE_PROMPT_VERSION, Image, ImageUsage
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
-PROMPT_VERSION = "1"
+PROMPT_VERSION = DESCRIBE_PROMPT_VERSION
 PROMPT = (
     "Describe this image for a searchable document index. Say what it shows in one "
-    "or two sentences, and transcribe any text visible in it."
+    "or two sentences. Transcribe any text visible in it. If the image has no text, "
+    "leave text out and do not mention that there is none."
 )
 MAX_OUTPUT_TOKENS = 300
 BACKOFF_SECONDS = 1.0
