@@ -114,3 +114,17 @@ bd prime                # Refresh Beads context
 
 **Architecture in one line:** issues live in a local Dolt DB; sync uses `refs/dolt/data` on your git remote; `.beads/issues.jsonl` is a passive export. See https://github.com/gastownhall/beads/blob/main/docs/core-concepts/sync-concepts.md for details and anti-patterns.
 <!-- END BEADS CODEX SETUP -->
+
+## Beads Sync (repo policy)
+
+- After creating, updating, claiming, or closing beads, run `bd sync` from the repo root to pull, recompute blocked state, and push the Dolt data to `origin`. Do this without asking; it is the standing authority for beads sync in this repo.
+- `bd sync` does not touch git commits. Git commit and push still need explicit user instruction.
+- If `bd sync` exits 2 (unresolvable conflict) or 4 (stuck working set), stop, do not force or auto-resolve, and report the exact command and output.
+
+## Git Delivery (repo policy)
+
+- Standing authority: once work is verified complete (tests, ruff, mypy, and the TUI run from the Conventions section where applicable), commit and push it without asking.
+- New features go on a feature branch and open as a pull request (`gh pr create`). Push the branch once the work is verified; do not push new features straight to `master`.
+- Bug fixes and docs-only changes may follow the same branch-and-PR flow; use judgment, and state which path you took.
+- Do not force-push, rewrite published history, or merge PRs without explicit user instruction.
+- If a push or PR creation is blocked, stop and report the exact command and error.
