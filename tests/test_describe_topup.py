@@ -166,6 +166,21 @@ def test_changed_model_redescribes_without_ocr(
     assert stored["describe"]["model"] == "other/model"
 
 
+def test_missing_key_is_reported_after_the_summary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: list
+) -> None:
+    src = _png(tmp_path)
+    monkeypatch.delenv(main.OPENROUTER_KEY_ENV, raising=False)
+    console = Console(record=True)
+
+    main.run_batch(
+        [src], tmp_path, tmp_path / "out", cast(OcrEngine, FakeEngine()), _args(), console
+    )
+
+    last_line = console.export_text().strip().splitlines()[-1]
+    assert last_line == "Image descriptions skipped: OPENROUTER_API_KEY is not set."
+
+
 def test_failed_image_is_recorded_and_file_still_completes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run: list
 ) -> None:

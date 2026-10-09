@@ -520,6 +520,10 @@ def run_batch(
         formats=formats,
         combined=combined,
     )
+    if args.describe_images and describe is None:
+        console.print(
+            f"[yellow]Image descriptions skipped: {OPENROUTER_KEY_ENV} is not set.[/]"
+        )
 
     done_entries = (
         [
