@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "simple_ocr_pipeline",
+  "project_id": "a681108c-b712-4408-a540-0317fe893e71"
+}
