@@ -7,11 +7,13 @@ import json
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Protocol
 
-from app.output import ImageUsage
+from app.images import Selection
+from app.output import Image, ImageUsage
 
 API_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "anthropic/claude-haiku-5.5"
@@ -172,3 +174,126 @@ class OpenRouterDescriber:
                 }
             ],
         }
+
+
+class ImageDescriber(Protocol):
+    def describe(self, image: bytes, mime: str) -> Description: ...
+
+
+def _items(value: object) -> list[dict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def cached_descriptions(doc: dict, *, model: str, prompt_version: str) -> dict[str, str]:
+    """Descriptions from a prior output document, keyed by image sha256.
+
+    Only images described with the same model and prompt version qualify, so
+    changing either one describes every image again.
+    """
+    cache: dict[str, str] = {}
+    for page in _items(doc.get("pages")):
+        for image in _items(page.get("images")):
+            if image.get("status") != "described":
+                continue
+            if image.get("model") != model or image.get("prompt_version") != prompt_version:
+                continue
+            sha256 = image.get("sha256")
+            text = image.get("description")
+            if isinstance(sha256, str) and isinstance(text, str) and text:
+                cache[sha256] = text
+    return cache
+
+
+def describe_images(
+    selections: Sequence[Selection],
+    describer: ImageDescriber,
+    *,
+    model: str,
+    prompt_version: str,
+    cache: Mapping[str, str],
+) -> list[Image]:
+    """Turn selections into output records, calling the describer only for new images.
+
+    An image that is already in ``cache`` or was described earlier in this run
+    is not sent again. A failed image is recorded as an error on every
+    occurrence and is not retried, and the other images still run.
+    """
+    texts: dict[str, str] = dict(cache)
+    failures: dict[str, str] = {}
+    records: list[Image] = []
+    for selection in selections:
+        occurrence = selection.occurrence
+        if selection.skip_reason is not None:
+            records.append(
+                Image(
+                    box=occurrence.box,
+                    sha256=occurrence.sha256,
+                    width=occurrence.width,
+                    height=occurrence.height,
+                    status="skipped",
+                    skip_reason=selection.skip_reason,
+                )
+            )
+        elif occurrence.sha256 in failures:
+            records.append(
+                Image(
+                    box=occurrence.box,
+                    sha256=occurrence.sha256,
+                    width=occurrence.width,
+                    height=occurrence.height,
+                    status="error",
+                    error=failures[occurrence.sha256],
+                    model=model,
+                    prompt_version=prompt_version,
+                )
+            )
+        elif occurrence.sha256 in texts:
+            records.append(
+                Image(
+                    box=occurrence.box,
+                    sha256=occurrence.sha256,
+                    width=occurrence.width,
+                    height=occurrence.height,
+                    status="described",
+                    description=texts[occurrence.sha256],
+                    model=model,
+                    prompt_version=prompt_version,
+                )
+            )
+        else:
+            try:
+                result = describer.describe(occurrence.data, occurrence.mime)
+            except DescribeError as exc:
+                failures[occurrence.sha256] = str(exc)
+                records.append(
+                    Image(
+                        box=occurrence.box,
+                        sha256=occurrence.sha256,
+                        width=occurrence.width,
+                        height=occurrence.height,
+                        status="error",
+                        error=str(exc),
+                        model=model,
+                        prompt_version=prompt_version,
+                    )
+                )
+            else:
+                texts[occurrence.sha256] = result.text
+                records.append(
+                    Image(
+                        box=occurrence.box,
+                        sha256=occurrence.sha256,
+                        width=occurrence.width,
+                        height=occurrence.height,
+                        status="described",
+                        description=result.text,
+                        model=model,
+                        prompt_version=prompt_version,
+                        described_at=result.described_at,
+                        latency_seconds=result.latency_seconds,
+                        usage=result.usage,
+                    )
+                )
+    return records
